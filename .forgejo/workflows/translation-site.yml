@@ -1,0 +1,186 @@
+# Builds a translation repository's translated books as sites with the comment
+# and edit tool, packages them, keeps the archive, and publishes them from main
+# (IDEMSInternational/svc#361, #363).
+#
+# A translation repository (IDEMSInternational/pretext-translate) translates
+# the books its translate.config.json lists, in a job of its own that uploads
+# each translated PreTeXt project as the artifact `translated`, one folder per
+# source name. This job, called after it in the same run, replaces a plain
+# `pretext build html` of each:
+#
+#   jobs:
+#     translate:
+#       ...                      # uploads the artifact `translated`
+#     site:
+#       needs: translate
+#       uses: IDEMSInternational/svc-actions/.forgejo/workflows/translation-site.yml@main
+#       secrets: inherit
+#
+# Each source is built through svc's svc-id layer with two repositories set:
+# the translation repository (the caller), which takes comments and edits about
+# the translation, and the source's own repository from translate.config.json,
+# which takes comments and edits about the content. The pages of source <name>
+# are published at <owner>.pages.idems.international/<repository>/<name>-<lang>/.
+#
+# The content editor needs each book in its own language too, which
+# pretext-translate does not keep, so each source is resolved again here at its
+# pinned ref (svc's scripts/translation_sources.py). That costs a clone per
+# source and no translation.
+#
+#   secrets.TRANSLATE_READ_TOKEN, else secrets.VARIANT_BUILD_READ_TOKEN
+#       read access to IDEMSInternational/svc and every source repository. It
+#       also lists what is open on the source repositories, for the site; a
+#       token that may not read their issues leaves them out.
+#   secrets.PAGES_TOKEN
+#       write:repository on the translation repository, to publish.
+#   vars.FEEDBACK_EDITORS
+#       as for a book: logins shown the editor, beyond collaborators.
+name: translation site
+
+on:
+  workflow_call:
+    inputs:
+      feedback:
+        description: Add the comment and edit tool to the sites (svc#317, #361).
+        type: boolean
+        default: true
+      artifact:
+        description: The artifact holding one translated PreTeXt project per source name.
+        type: string
+        default: translated
+      target:
+        description: The target in each project.ptx to build.
+        type: string
+        default: html
+      svc-ref:
+        description: The branch, tag or commit of svc to build with.
+        type: string
+        default: main
+
+jobs:
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: translate
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: ${{ inputs.artifact }}
+          path: translated
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch svc and resolve each source in its own language
+        env:
+          READ_TOKEN: ${{ secrets.TRANSLATE_READ_TOKEN || secrets.VARIANT_BUILD_READ_TOKEN }}
+          SVC_REF: ${{ inputs.svc-ref }}
+        # Written to a file rather than a remote URL, so it cannot reach the
+        # log through a command echo or a git error.
+        run: |
+          umask 077
+          if [ -z "$READ_TOKEN" ]; then
+            echo "Not configured: set the Actions secret TRANSLATE_READ_TOKEN to a token that can"
+            echo "read IDEMSInternational/svc and every repository translate.config.json lists."
+            exit 1
+          fi
+          printf 'https://x-access-token:%s@git.idems.international\n' "$READ_TOKEN" >"$HOME/.git-credentials"
+          git config --global credential.helper store
+          git config --global --add safe.directory '*'
+          git init -q svc
+          git -C svc fetch -q --depth 1 https://git.idems.international/IDEMSInternational/svc.git "$SVC_REF"
+          git -C svc checkout -q FETCH_HEAD
+          echo "svc at $(git -C svc rev-parse --short HEAD) ($SVC_REF)"
+          pip install --no-cache-dir "pretext==2.52.3" ./svc
+          python svc/scripts/translation_sources.py --config translate/translate.config.json --into content
+
+      - name: Build each translated source through the svc-id layer
+        shell: bash
+        env:
+          FEEDBACK: ${{ inputs.feedback }}
+          TARGET: ${{ inputs.target }}
+          # The same relay as books'. It must list this repository and every
+          # source repository in FORGEJO_REPOSITORIES (svc#360).
+          SVC_FEEDBACK_RELAY: ${{ inputs.feedback && 'https://script.google.com/macros/s/AKfycbxvsnpfkSkJBGklgPhPQa-zpuYFGTqDSdzHyVlMQDhnCFJ1ElTrBvMTP27AopFxCQiSOA/exec' || '' }}
+          SVC_FEEDBACK_VISIBILITY: ${{ github.event.repository.private && 'private' || 'public' }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_CONTENT_TOKEN: ${{ secrets.TRANSLATE_READ_TOKEN || secrets.VARIANT_BUILD_READ_TOKEN }}
+          FEEDBACK_EDITORS: ${{ vars.FEEDBACK_EDITORS }}
+        # --no-generate: generated assets come committed in the sources, and a
+        # fresh tree has no asset cache, so pretext would otherwise try to
+        # regenerate them with tools this job doesn't install.
+        #
+        # A source's own repository visibility decides whether its content can
+        # be edited from the site (svc#331): the wrapper asks the forge.
+        run: |
+          mkdir -p dist
+          while IFS=$'\t' read -r -u 3 name repo lang source_lang content_source; do
+            project="translated/$name"
+            echo "=== $name ($source_lang -> $lang), content from $repo ==="
+            mkdir -p "$project/xsl" "$project/tools"
+            cp svc/scripts/base/xsl/svc-id-attributes.xsl "$project/xsl/"
+            cp svc/scripts/base/tools/with_svc_layer.py svc/scripts/base/tools/package_site.py "$project/tools/"
+            rm -rf "$project/feedback"
+            cp -r svc/scripts/base/feedback "$project/"
+            out=$(cd "$project" && python -c 'import sys; sys.path.insert(0, "tools")
+          from with_svc_layer import output_dir
+          print(output_dir(open("project.ptx", "rb").read(), sys.argv[1]).as_posix())' "$TARGET")
+            if [ "$FEEDBACK" = true ]; then
+              (cd "$project" && python tools/with_svc_layer.py --target "$TARGET" \
+                --feedback-repo "$GITHUB_REPOSITORY" --feedback-content-repo "$repo" \
+                --feedback-lang "$lang" --feedback-source-lang "$source_lang" \
+                --feedback-content-source "$GITHUB_WORKSPACE/$content_source" \
+                pretext build "$TARGET" --no-generate)
+              python svc/scripts/site_feedback.py site-json --out "$project/$out/_svc-feedback" \
+                --content-repo "$repo" --book "content/$name/book" --resolved "content/$name/tree"
+            else
+              (cd "$project" && python tools/with_svc_layer.py --target "$TARGET" pretext build "$TARGET" --no-generate)
+            fi
+            python svc/scripts/base/tools/package_site.py "$project/$out" "dist/$name-$lang.tar.gz"
+          done 3< content/sources.tsv
+
+      - name: Combine into one site, nested by source
+        # pages.idems.international only serves a path named for a real
+        # repository, so every source goes under the translation repository's.
+        run: |
+          mkdir -p site
+          for archive in dist/*.tar.gz; do
+            name="$(basename "$archive" .tar.gz)"
+            mkdir -p "site/$name"
+            tar -xzf "$archive" -C "site/$name"
+          done
+          (cd site && tar -czf ../dist/site.tar.gz *)
+
+      - name: Keep the archives for review
+        # v3, deliberately: Forgejo's artifact backend does not implement v4's API.
+        uses: actions/upload-artifact@v3
+        with:
+          name: translated-sites
+          path: dist
+          retention-days: 14
+
+      - name: Publish the sites
+        # Only main, or a manual run, is published; other branches are reviewed
+        # from the archive.
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          FORGE_TOKEN: ${{ secrets.PAGES_TOKEN }}
+        run: |
+          FORGE_TOKEN=$(printf '%s' "$FORGE_TOKEN" | tr -d '[:space:]')
+          if [ -z "$FORGE_TOKEN" ]; then
+            echo "Not configured: set the Actions secret PAGES_TOKEN to a token with"
+            echo "write:repository on this repository."
+            exit 1
+          fi
+          owner=$(printf '%s' "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')
+          site="https://${owner}.pages.idems.international/${GITHUB_REPOSITORY#*/}/"
+          curl --fail-with-body -sS -X PUT \
+            -H "Content-Type: application/x-tar+gzip" \
+            -H "Forge-Authorization: token $FORGE_TOKEN" \
+            --data-binary @dist/site.tar.gz "$site"
+          echo "Published $site"
+          for d in site/*/; do echo "  -> ${site}$(basename "$d")/"; done

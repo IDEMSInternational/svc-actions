@@ -1,0 +1,75 @@
+# Records an edit to a translation, submitted from a translated site, and opens
+# a pull request (IDEMSInternational/svc#361). A translation repository calls
+# this from its own .forgejo/workflows/site-translation-edit.yml, on
+# `issues: opened`, with `secrets: inherit`.
+#
+# The site's tool opens an issue titled "[translation-edit] ..." carrying the
+# rewritten translated nodes in a collapsed svc-translation-edit-v1 block.
+# svc's scripts/site_feedback.py apply-translation-edit checks it and, for
+# someone allowed to edit, adds one file per rewrite under
+# feedback-edits/translations/<source name>/ on translation-edit/issue-<n>, with
+# a pull request that closes the issue. Anyone else's edit stays open as a
+# suggestion; the relay's account is refused.
+#
+# That folder is temporary. Nothing reads it: it shows that edits to a
+# translation land in the translation repository, until the translators settle
+# how they should really be kept (svc#358).
+#
+# The issue is untrusted: it is only parsed, never run.
+#
+#   secrets.VARIANT_BUILD_READ_TOKEN
+#       read access to IDEMSInternational/svc. An organisation secret.
+#
+# The job's own token pushes the branch, opens the pull request and comments.
+name: site translation edit
+
+on:
+  workflow_call:
+    inputs:
+      svc-ref:
+        description: The branch, tag or commit of svc to run.
+        type: string
+        default: main
+
+jobs:
+  apply:
+    if: startsWith(github.event.issue.title, '[translation-edit]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: translate
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch svc
+        env:
+          VARIANT_BUILD_READ_TOKEN: ${{ secrets.VARIANT_BUILD_READ_TOKEN }}
+          SVC_REF: ${{ inputs.svc-ref }}
+        # The read token is removed again at the end of this step, before the
+        # issue is read. The checkout's own token stays, to push the branch.
+        run: |
+          umask 077
+          if [ -z "$VARIANT_BUILD_READ_TOKEN" ]; then
+            echo "Not configured: set the Actions secret VARIANT_BUILD_READ_TOKEN to a token"
+            echo "that can read IDEMSInternational/svc."
+            exit 1
+          fi
+          printf 'https://x-access-token:%s@git.idems.international\n' "$VARIANT_BUILD_READ_TOKEN" >"$HOME/.git-credentials"
+          git config --global credential.helper store
+          git config --global --add safe.directory '*'
+          trap 'rm -f "$HOME/.git-credentials"; git config --global --unset-all credential.helper || true' EXIT
+          git init -q svc
+          git -C svc fetch -q --depth 1 https://git.idems.international/IDEMSInternational/svc.git "$SVC_REF"
+          git -C svc checkout -q FETCH_HEAD
+          pip install --no-cache-dir ./svc
+
+      - name: Record the edit
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FEEDBACK_RELAY_BOT: ${{ vars.FEEDBACK_RELAY_BOT }}
+          FEEDBACK_EDITORS: ${{ vars.FEEDBACK_EDITORS }}
+        run: python svc/scripts/site_feedback.py apply-translation-edit --repo-dir translate
