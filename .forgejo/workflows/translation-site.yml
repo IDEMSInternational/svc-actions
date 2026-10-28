@@ -56,6 +56,13 @@ on:
         description: The branch, tag or commit of svc to build with.
         type: string
         default: main
+      publish:
+        description: >-
+          Publish from a branch other than main too. Pass
+          `${{ github.event_name == 'workflow_dispatch' }}` to publish on a
+          manual run: inside this workflow the event is not the caller's.
+        type: boolean
+        default: false
 
 jobs:
   site:
@@ -163,9 +170,9 @@ jobs:
           retention-days: 14
 
       - name: Publish the sites
-        # Only main, or a manual run, is published; other branches are reviewed
-        # from the archive.
-        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        # Only main, or a run the caller says to publish, is published; other
+        # branches are reviewed from the archive.
+        if: github.ref == 'refs/heads/main' || inputs.publish
         shell: bash
         env:
           FORGE_TOKEN: ${{ secrets.PAGES_TOKEN }}
