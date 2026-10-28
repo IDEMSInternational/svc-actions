@@ -58,9 +58,9 @@ on:
         default: main
       publish:
         description: >-
-          Publish from a branch other than main too. Pass
-          `${{ github.event_name == 'workflow_dispatch' }}` to publish on a
-          manual run: inside this workflow the event is not the caller's.
+          Publish from a branch other than main too. To publish a manual run,
+          set it from an output of one of the caller's own jobs: neither this
+          workflow nor the caller's `with:` sees the event as workflow_dispatch.
         type: boolean
         default: false
 
