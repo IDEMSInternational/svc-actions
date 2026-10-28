@@ -57,6 +57,8 @@ uploads the translated projects as the artifact `translated`; then:
     needs: translate
     uses: IDEMSInternational/svc-actions/.forgejo/workflows/translation-site.yml@main
     secrets: inherit
+    with:
+      publish: ${{ github.event_name == 'workflow_dispatch' }}
 ```
 
 On each page, comments and edits about the content go to the source book's
@@ -67,7 +69,8 @@ each source repository needs the book's own `site-feedback.yml` and
 `site-edit.yml` to handle what arrives there.
 
 `translation-site.yml` inputs: `feedback` (default `true`), `artifact`
-(`translated`), `target` (`html`), `svc-ref` (`main`). It needs
+(`translated`), `target` (`html`), `svc-ref` (`main`), `publish` (`false`:
+publish from a branch other than `main` too). It needs
 `TRANSLATE_READ_TOKEN` (or `VARIANT_BUILD_READ_TOKEN`), able to read svc and
 every source, and `PAGES_TOKEN` to publish.
 
