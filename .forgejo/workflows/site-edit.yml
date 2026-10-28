@@ -1,0 +1,80 @@
+# Applies an edit submitted from a book's website and opens a pull request.
+# A book calls this from its own .forgejo/workflows/site-edit.yml, on
+# `issues: opened`, with `secrets: inherit`.
+#
+# The site's feedback tool opens an issue titled "[edit] ..." carrying the
+# rewritten nodes in a collapsed svc-edit-v1 block. This job applies them with
+# svc's scripts/site_feedback.py: in a base the node is replaced in its .ptx
+# file and no other byte changes; in a variant each rewrite becomes a
+# decomposition listed in .svc/config.json. It pushes edit/issue-<n> and opens a
+# pull request that closes the issue, or adds to the open pull request of an
+# earlier submission the issue follows. Whose edits are applied is decided from
+# the account that opened the issue (docs/site-feedback.md in svc).
+#
+# The issue is untrusted: it is only parsed, never run.
+#
+#   secrets.VARIANT_BUILD_READ_TOKEN
+#       read access to IDEMSInternational/svc and, for a variant, to its parent
+#       book. An organisation secret, reaching here through `secrets: inherit`.
+#
+# The job's own token (secrets.GITHUB_TOKEN) is the calling book's: it pushes
+# the branch, opens the pull request and comments. A push made with it does
+# not start other workflows. vars are the calling book's too.
+name: site edit
+
+on:
+  workflow_call:
+    inputs:
+      svc-ref:
+        description: The branch, tag or commit of svc to run.
+        type: string
+        default: main
+
+jobs:
+  apply:
+    if: startsWith(github.event.issue.title, '[edit]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: book
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch svc and, for a variant, its parents
+        env:
+          VARIANT_BUILD_READ_TOKEN: ${{ secrets.VARIANT_BUILD_READ_TOKEN }}
+          SVC_REF: ${{ inputs.svc-ref }}
+        # The read token is written to a file rather than into a remote URL, so
+        # it cannot reach the job log through a command echo or a git error. It
+        # is removed again at the end of this step, before the issue is read:
+        # everything that needs it -- svc, and a variant's parent chain -- is
+        # cloned here. The checkout's own token stays, to push the branch.
+        run: |
+          umask 077
+          if [ -z "$VARIANT_BUILD_READ_TOKEN" ]; then
+            echo "Not configured: set the Actions secret VARIANT_BUILD_READ_TOKEN to a token"
+            echo "that can read IDEMSInternational/svc (and a variant's parent book)."
+            exit 1
+          fi
+          printf 'https://x-access-token:%s@git.idems.international\n' "$VARIANT_BUILD_READ_TOKEN" >"$HOME/.git-credentials"
+          git config --global credential.helper store
+          git config --global --add safe.directory '*'
+          trap 'rm -f "$HOME/.git-credentials"; git config --global --unset-all credential.helper || true' EXIT
+          git init -q svc
+          git -C svc fetch -q --depth 1 https://git.idems.international/IDEMSInternational/svc.git "$SVC_REF"
+          git -C svc checkout -q FETCH_HEAD
+          pip install --no-cache-dir ./svc
+          python svc/scripts/site_feedback.py fetch-parents --book book --into parents
+
+      - name: Apply the edit
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The anonymous relay's account, if this book has one: its issues are
+          # never applied as edits, collaborator or not.
+          FEEDBACK_RELAY_BOT: ${{ vars.FEEDBACK_RELAY_BOT }}
+          FEEDBACK_EDITORS: ${{ vars.FEEDBACK_EDITORS }}
+        run: python svc/scripts/site_feedback.py apply-edit --book book --mirrors parents/mirrors.json

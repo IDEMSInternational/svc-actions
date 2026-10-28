@@ -1,0 +1,195 @@
+# Builds a book's site, packages it, keeps the archive, and publishes it from
+# main. Every book on git.idems.international calls this from its own
+# .forgejo/workflows/site-archive.yml:
+#
+#   jobs:
+#     site:
+#       uses: IDEMSInternational/svc-actions/.forgejo/workflows/build.yml@main
+#       secrets: inherit
+#       with:
+#         feedback: false
+#
+# The book says nothing else. Whether it is a base or a variant is read from
+# its .svc/config.json:
+#
+#   base     built as it is;
+#   variant  resolved against its pinned parent first, with svc's resolver.
+#
+# Either way the build files come from svc at build time, not from the book:
+# the svc-id HTML layer (xsl/), its wrapper and the packager (tools/), and the
+# feedback tool (feedback/), all under scripts/base/ in svc. A change to them is
+# made once, in svc (IDEMSInternational/svc#355).
+#
+# This repository is public because Forgejo only lets a workflow call another
+# repository's workflow when that repository is public. svc is private, so it
+# is cloned with the caller's VARIANT_BUILD_READ_TOKEN, an organisation secret
+# that reaches this workflow through `secrets: inherit`. The job's own token,
+# github.repository and vars are the calling book's.
+name: build
+
+on:
+  workflow_call:
+    inputs:
+      feedback:
+        description: Add the comment and edit tool to the site (svc#317). Its issues go to the calling repository.
+        type: boolean
+        default: false
+      max-ptx-errors:
+        description: >-
+          Tolerate a non-zero exit from pretext as long as it wrote the site and
+          logged at most this many PTX:ERROR lines. Empty means any failure fails.
+        type: string
+        default: ""
+      svc-ref:
+        description: The branch, tag or commit of svc to build with.
+        type: string
+        default: main
+
+jobs:
+  archive:
+    # The runner declares exactly one label, ubuntu-latest. A runs-on that
+    # matches no label is not rejected -- the job queues forever.
+    #
+    # No `container:` here. checkout and upload-artifact are JavaScript
+    # actions, so whatever they run in must have node; the runner's own image
+    # does, and a bare python image does not.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: book
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch svc
+        env:
+          VARIANT_BUILD_READ_TOKEN: ${{ secrets.VARIANT_BUILD_READ_TOKEN }}
+          SVC_REF: ${{ inputs.svc-ref }}
+        # The token is written to a file rather than into a remote URL, so it
+        # cannot reach the job log through a command echo or a git error. It
+        # stays for the rest of the job: a variant's resolver clones its parents.
+        run: |
+          umask 077
+          if [ -z "$VARIANT_BUILD_READ_TOKEN" ]; then
+            echo "Not configured: set the Actions secret VARIANT_BUILD_READ_TOKEN, on this"
+            echo "repository or on the organisation, to a token that can read"
+            echo "IDEMSInternational/svc and, for a variant, its parent book."
+            exit 1
+          fi
+          printf 'https://x-access-token:%s@git.idems.international\n' "$VARIANT_BUILD_READ_TOKEN" >"$HOME/.git-credentials"
+          git config --global credential.helper store
+          git config --global --add safe.directory '*'
+          # svc's Forgejo mirror tracks GitHub every 10 minutes. Fetching by ref
+          # rather than cloning a branch also takes a tag or a commit.
+          git init -q svc
+          git -C svc fetch -q --depth 1 https://git.idems.international/IDEMSInternational/svc.git "$SVC_REF"
+          git -C svc checkout -q FETCH_HEAD
+          echo "svc at $(git -C svc rev-parse --short HEAD) ($SVC_REF)"
+
+      - name: Install
+        run: |
+          role=$(python -c 'import json; print(json.load(open("book/.svc/config.json"))["role"])')
+          echo "This book is a $role."
+          echo "ROLE=$role" >>"$GITHUB_ENV"
+          pip install --no-cache-dir "pretext==2.52.3"
+          # A base without the feedback tool needs only PreTeXt; the resolver
+          # and site_feedback.py need the svc library.
+          if [ "$role" = variant ] || [ "${{ inputs.feedback }}" = true ]; then
+            pip install --no-cache-dir ./svc
+          fi
+
+      - name: Resolve a variant against its parent
+        if: env.ROLE == 'variant'
+        run: python svc/scripts/resolve_variant.py book resolved
+
+      - name: Add svc's build files to the tree
+        # The tree is the book itself for a base, and the resolved book for a
+        # variant. Copies at the same paths the wrapper expects, beside
+        # project.ptx; a file of the same name already in the tree is replaced.
+        run: |
+          if [ "$ROLE" = variant ]; then tree=resolved; else tree=book; fi
+          echo "TREE=$tree" >>"$GITHUB_ENV"
+          mkdir -p "$tree/xsl" "$tree/tools"
+          cp svc/scripts/base/xsl/svc-id-attributes.xsl "$tree/xsl/"
+          cp svc/scripts/base/tools/with_svc_layer.py svc/scripts/base/tools/package_site.py "$tree/tools/"
+          rm -rf "$tree/feedback"
+          cp -r svc/scripts/base/feedback "$tree/"
+
+      - name: Build the site
+        shell: bash
+        env:
+          # Read by tools/with_svc_layer.py. Without a repository the site has
+          # no feedback tool. Readers without an account comment through the
+          # relay, which posts as idems-feedback-bot. Editing follows the
+          # repository's visibility (svc#331). See docs/site-feedback.md in svc.
+          SVC_FEEDBACK_REPO: ${{ inputs.feedback && github.repository || '' }}
+          SVC_FEEDBACK_RELAY: ${{ inputs.feedback && 'https://script.google.com/macros/s/AKfycbxvsnpfkSkJBGklgPhPQa-zpuYFGTqDSdzHyVlMQDhnCFJ1ElTrBvMTP27AopFxCQiSOA/exec' || '' }}
+          SVC_FEEDBACK_VISIBILITY: ${{ inputs.feedback && (github.event.repository.private && 'private' || 'public') || '' }}
+          MAX_PTX_ERRORS: ${{ inputs.max-ptx-errors }}
+        run: |
+          cd "$TREE"
+          if [ -z "$MAX_PTX_ERRORS" ]; then
+            exec python tools/with_svc_layer.py pretext build web
+          fi
+          # Some books trip a PreTeXt bug that makes pretext exit non-zero while
+          # still writing the site. Fail only if no site is written or if the
+          # error count rises above the ceiling the book declares.
+          set +e
+          python tools/with_svc_layer.py pretext build web 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          set -e
+          errors=$(grep -c 'PTX:ERROR' build.log || true)
+          echo "pretext exited with status $status and logged $errors PTX:ERROR lines (ceiling $MAX_PTX_ERRORS)."
+          if [ ! -f output/web/index.html ]; then
+            echo "No site was written."
+            exit 1
+          fi
+          if [ "$errors" -gt "$MAX_PTX_ERRORS" ]; then
+            echo "More PreTeXt errors than the known ones: something new needs fixing."
+            exit 1
+          fi
+
+      - name: Publish open feedback and the book's categories with the site
+        # git.idems.international sends no CORS headers, so the page can't ask
+        # Forgejo what is open. This writes open.json, editors.json and
+        # categories.json into the site instead (docs/site-feedback.md in svc).
+        if: inputs.feedback
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FEEDBACK_EDITORS: ${{ vars.FEEDBACK_EDITORS }}
+        run: python svc/scripts/site_feedback.py site-json --out "$TREE/output/web/_svc-feedback" --book book --resolved "$TREE"
+
+      - name: Package the built site
+        # The repository may be private and a published site is not, so the
+        # archive is assembled from the build output alone, against an
+        # allowlist. Read its report here before trusting an archive.
+        run: python "$TREE/tools/package_site.py" "$TREE/output/web" dist/site.tar.gz
+
+      - name: Keep the archive for review
+        # v3, deliberately: v4 talks to GitHub's newer artifact API, which
+        # Forgejo's artifact backend does not implement. Do not "upgrade".
+        uses: actions/upload-artifact@v3
+        with:
+          name: site-archive
+          path: dist/site.tar.gz
+          retention-days: 14
+
+      - name: Publish the site
+        # Only main is published; other branches are reviewed from the archive.
+        # What goes up is the allowlisted archive above, never the raw build
+        # output. git-pages authorizes the upload by asking the forge whether
+        # this token can push to the repository the site URL names
+        # (IDEMSInternational/svc#334).
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          FORGE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          site="https://idemsinternational.pages.idems.international/${GITHUB_REPOSITORY#*/}/"
+          curl --fail-with-body -sS -X PUT \
+            -H "Content-Type: application/x-tar+gzip" \
+            -H "Forge-Authorization: token $FORGE_TOKEN" \
+            --data-binary @dist/site.tar.gz "$site"
+          echo "Published $site"

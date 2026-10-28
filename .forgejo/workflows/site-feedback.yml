@@ -1,0 +1,51 @@
+# Handles feedback submitted from a book's website: an issue titled
+# "[feedback] ...", opened by a signed-in reader or by the anonymous relay
+# (svc's scripts/feedback-relay/Code.gs). Labels it "feedback", or, when it
+# follows earlier feedback by the same person that is still open, copies it
+# there and closes it. Issues are never turned into pull requests, and their
+# content is only parsed. A book calls this from its own
+# .forgejo/workflows/site-feedback.yml, on `issues: opened`, with
+# `secrets: inherit`.
+#
+#   secrets.VARIANT_BUILD_READ_TOKEN
+#       read access to IDEMSInternational/svc, for the script. An organisation
+#       secret, reaching here through `secrets: inherit`.
+name: site feedback
+
+on:
+  workflow_call:
+    inputs:
+      svc-ref:
+        description: The branch, tag or commit of svc to run.
+        type: string
+        default: main
+
+jobs:
+  feedback:
+    if: startsWith(github.event.issue.title, '[feedback]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch svc
+        env:
+          VARIANT_BUILD_READ_TOKEN: ${{ secrets.VARIANT_BUILD_READ_TOKEN }}
+          SVC_REF: ${{ inputs.svc-ref }}
+        # The read token is removed again at the end of this step, before the
+        # issue, which may be anonymous text, is read.
+        run: |
+          umask 077
+          printf 'https://x-access-token:%s@git.idems.international\n' "$VARIANT_BUILD_READ_TOKEN" >"$HOME/.git-credentials"
+          git config --global credential.helper store
+          trap 'rm -f "$HOME/.git-credentials"; git config --global --unset-all credential.helper || true' EXIT
+          git init -q svc
+          git -C svc fetch -q --depth 1 https://git.idems.international/IDEMSInternational/svc.git "$SVC_REF"
+          git -C svc checkout -q FETCH_HEAD
+          pip install --no-cache-dir ./svc
+
+      - name: Handle the feedback
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python svc/scripts/site_feedback.py feedback
