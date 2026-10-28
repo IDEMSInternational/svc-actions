@@ -50,16 +50,25 @@ A translation repository (IDEMSInternational/pretext-translate, e.g.
 IDEMSInternational/minimal-svc-translate) translates books listed in its
 `translate.config.json` and publishes them under its own pages path,
 `<name>-<lang>/` per source (IDEMSInternational/svc#361). Its translate job
-uploads the translated projects as the artifact `translated`; then:
+uploads the translated projects as the artifact `translated`, and says whether
+this run should publish from a branch other than `main`; then:
 
 ```yaml
+  translate:
+    outputs:
+      publish: ${{ github.event_name == 'workflow_dispatch' }}
+    ...
   site:
     needs: translate
     uses: IDEMSInternational/svc-actions/.forgejo/workflows/translation-site.yml@main
     secrets: inherit
     with:
-      publish: ${{ github.event_name == 'workflow_dispatch' }}
+      publish: ${{ needs.translate.outputs.publish == 'true' }}
 ```
+
+The flag comes through a job output because neither a called workflow nor
+its caller's `with:` sees the run's event as `workflow_dispatch` on this
+Forgejo.
 
 On each page, comments and edits about the content go to the source book's
 repository, and comments and edits about the translation go to the translation
