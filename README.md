@@ -9,7 +9,7 @@ workflow files only call these:
 | [`site-edit.yml`](.forgejo/workflows/site-edit.yml) | `site-edit.yml`, on `issues: opened` | turns an `[edit]` issue from the site into a pull request |
 | [`site-feedback.yml`](.forgejo/workflows/site-feedback.yml) | `site-feedback.yml`, on `issues: opened` | labels a `[feedback]` issue, or folds it into the reader's earlier one |
 | [`translation-site.yml`](.forgejo/workflows/translation-site.yml) | a translation repository's workflow, after its translate job | builds each translated book with the tool, comments and edits going to the translation repository or the source book; packages; publishes from `main` |
-| [`site-translation-edit.yml`](.forgejo/workflows/site-translation-edit.yml) | a translation repository's `site-translation-edit.yml`, on `issues: opened` | records a `[translation-edit]` issue's edits on a branch and opens a pull request |
+| [`site-translation-edit.yml`](.forgejo/workflows/site-translation-edit.yml) | a translation repository's `site-translation-edit.yml`, on `issues: opened` | turns a `[translation-edit]` issue's edits into dictionary entries or postprocess rules on a branch, and opens a pull request |
 
 This repository holds workflow YAML only. The code it runs lives in
 [svc](https://github.com/IDEMSInternational/svc): the svc-id HTML layer, its
@@ -83,9 +83,12 @@ publish from a branch other than `main` too). It needs
 `TRANSLATE_READ_TOKEN` (or `VARIANT_BUILD_READ_TOKEN`), able to read svc and
 every source, and `PAGES_TOKEN` to publish.
 
-Edits to a translation are only recorded for now, in
-`feedback-edits/translations/` on a branch: a temporary holding area until the
-translators settle how they should be kept (IDEMSInternational/svc#358).
+An edit to a translation becomes a pull request that changes it the way
+pretext-translate's own fixes do (IDEMSInternational/svc#358, #375): an entry
+in the explicit-translations dictionary `translate.config.json` names, or,
+where the edited part isn't one segment, a postprocess rule for its svc-id.
+`site-translation-edit.yml` resolves each source in its own language to find
+the segment, so it needs the same read token as `translation-site.yml`.
 
 ## Versions
 
