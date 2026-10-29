@@ -152,13 +152,36 @@ jobs:
       - name: Combine into one site, nested by source
         # pages.idems.international only serves a path named for a real
         # repository, so every source goes under the translation repository's.
+        # Also writes a root index.html linking to each one: visiting the
+        # bare repository path otherwise 404s, since nothing before this
+        # ever published anything at the root itself. Each link's text is
+        # scraped from that source's own index.html (its og/twitter title
+        # meta, which pretext build always writes) rather than the bare
+        # slug, falling back to the slug if a source's index.html doesn't
+        # have one for some reason.
         run: |
           mkdir -p site
+          {
+            echo '<!DOCTYPE html>'
+            echo '<html lang="en">'
+            echo "<head><meta charset=\"utf-8\"><title>${GITHUB_REPOSITORY#*/}</title></head>"
+            echo '<body>'
+            echo "<h1>${GITHUB_REPOSITORY#*/}</h1>"
+            echo '<ul>'
+          } >site/index.html
           for archive in dist/*.tar.gz; do
             name="$(basename "$archive" .tar.gz)"
             mkdir -p "site/$name"
             tar -xzf "$archive" -C "site/$name"
+            title=$(grep -o '<meta property="og:title" content="[^"]*"' "site/$name/index.html" 2>/dev/null \
+              | head -1 | sed -E 's/.*content="([^"]*)".*/\1/')
+            printf '<li><a href="%s/">%s</a></li>\n' "$name" "${title:-$name}" >>site/index.html
           done
+          {
+            echo '</ul>'
+            echo '</body>'
+            echo '</html>'
+          } >>site/index.html
           (cd site && tar -czf ../dist/site.tar.gz *)
 
       - name: Keep the archives for review
