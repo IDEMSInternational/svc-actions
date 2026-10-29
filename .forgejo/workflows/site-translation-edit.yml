@@ -1,24 +1,29 @@
-# Records an edit to a translation, submitted from a translated site, and opens
-# a pull request (IDEMSInternational/svc#361). A translation repository calls
-# this from its own .forgejo/workflows/site-translation-edit.yml, on
+# Applies an edit to a translation, submitted from a translated site, and opens
+# a pull request (IDEMSInternational/svc#361, #375). A translation repository
+# calls this from its own .forgejo/workflows/site-translation-edit.yml, on
 # `issues: opened`, with `secrets: inherit`.
 #
 # The site's tool opens an issue titled "[translation-edit] ..." carrying the
 # rewritten translated nodes in a collapsed svc-translation-edit-v1 block.
 # svc's scripts/site_feedback.py apply-translation-edit checks it and, for
-# someone allowed to edit, adds one file per rewrite under
-# feedback-edits/translations/<source name>/ on translation-edit/issue-<n>, with
-# a pull request that closes the issue. Anyone else's edit stays open as a
-# suggestion; the relay's account is refused.
+# someone allowed to edit, changes the translation the way pretext-translate's
+# own fixes do (svc#358), on translation-edit/issue-<n>, with a pull request
+# that closes the issue:
+#   - an entry in the explicit-translations dictionary translate.config.json
+#     names, when the node is one segment of the committed translation memory
+#     (whose old entry for it is dropped, since the memory is read first);
+#   - otherwise a postprocess rule for the node's svc-id in translate.config.json.
+# Anyone else's edit stays open as a suggestion; the relay's account is refused.
 #
-# That folder is temporary. Nothing reads it: it shows that edits to a
-# translation land in the translation repository, until the translators settle
-# how they should really be kept (svc#358).
+# To find a node's segment it needs the English, so each source is resolved
+# again at its pinned ref (svc's scripts/translation_sources.py, a clone per
+# source and no translation), and pretext-translate itself, to encode and check
+# the entry. If a source can't be resolved, its edits become postprocess rules.
 #
 # The issue is untrusted: it is only parsed, never run.
 #
-#   secrets.VARIANT_BUILD_READ_TOKEN
-#       read access to IDEMSInternational/svc. An organisation secret.
+#   secrets.TRANSLATE_READ_TOKEN, else secrets.VARIANT_BUILD_READ_TOKEN
+#       read access to IDEMSInternational/svc and every source repository.
 #
 # The job's own token pushes the branch, opens the pull request and comments.
 name: site translation edit
@@ -45,31 +50,36 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Fetch svc
+      - name: Fetch svc and pretext-translate, and resolve each source in its own language
         env:
-          VARIANT_BUILD_READ_TOKEN: ${{ secrets.VARIANT_BUILD_READ_TOKEN }}
+          READ_TOKEN: ${{ secrets.TRANSLATE_READ_TOKEN || secrets.VARIANT_BUILD_READ_TOKEN }}
           SVC_REF: ${{ inputs.svc-ref }}
         # The read token is removed again at the end of this step, before the
         # issue is read. The checkout's own token stays, to push the branch.
         run: |
           umask 077
-          if [ -z "$VARIANT_BUILD_READ_TOKEN" ]; then
-            echo "Not configured: set the Actions secret VARIANT_BUILD_READ_TOKEN to a token"
-            echo "that can read IDEMSInternational/svc."
+          if [ -z "$READ_TOKEN" ]; then
+            echo "Not configured: set the Actions secret TRANSLATE_READ_TOKEN to a token that can"
+            echo "read IDEMSInternational/svc and every repository translate.config.json lists."
             exit 1
           fi
-          printf 'https://x-access-token:%s@git.idems.international\n' "$VARIANT_BUILD_READ_TOKEN" >"$HOME/.git-credentials"
+          printf 'https://x-access-token:%s@git.idems.international\n' "$READ_TOKEN" >"$HOME/.git-credentials"
           git config --global credential.helper store
           git config --global --add safe.directory '*'
           trap 'rm -f "$HOME/.git-credentials"; git config --global --unset-all credential.helper || true' EXIT
           git init -q svc
           git -C svc fetch -q --depth 1 https://git.idems.international/IDEMSInternational/svc.git "$SVC_REF"
           git -C svc checkout -q FETCH_HEAD
-          pip install --no-cache-dir ./svc
+          echo "svc at $(git -C svc rev-parse --short HEAD) ($SVC_REF)"
+          git clone -q --depth 1 https://git.idems.international/IDEMSInternational/pretext-translate.git pretext-translate
+          echo "pretext-translate at $(git -C pretext-translate rev-parse --short HEAD)"
+          pip install --no-cache-dir ./svc ./pretext-translate
+          python svc/scripts/translation_sources.py --config translate/translate.config.json --into sources \
+            || echo "warning: the sources could not all be resolved; edits to them become postprocess rules"
 
-      - name: Record the edit
+      - name: Apply the edit
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FEEDBACK_RELAY_BOT: ${{ vars.FEEDBACK_RELAY_BOT }}
           FEEDBACK_EDITORS: ${{ vars.FEEDBACK_EDITORS }}
-        run: python svc/scripts/site_feedback.py apply-translation-edit --repo-dir translate
+        run: python svc/scripts/site_feedback.py apply-translation-edit --repo-dir translate --sources sources
