@@ -44,6 +44,14 @@ on:
         description: The branch, tag or commit of svc to build with.
         type: string
         default: main
+      stack-bank:
+        description: >-
+          A repository in the IDEMSInternational organisation, cloned to
+          assets/stack/<name> in the built tree. For a book whose STACK questions
+          live in a submodule upstream, which a base made by svc does not carry.
+          Empty means none.
+        type: string
+        default: ""
 
 jobs:
   archive:
@@ -116,6 +124,19 @@ jobs:
           cp svc/scripts/base/tools/with_svc_layer.py svc/scripts/base/tools/package_site.py "$tree/tools/"
           rm -rf "$tree/feedback"
           cp -r svc/scripts/base/feedback "$tree/"
+
+      - name: Add the STACK question bank
+        if: inputs.stack-bank != ''
+        env:
+          STACK_BANK: ${{ inputs.stack-bank }}
+        # The sources name the bank by path (stack/<name>/...), as the upstream
+        # submodule does. Cloned with the credentials Fetch svc stored.
+        run: |
+          rm -rf "$TREE/assets/stack/$STACK_BANK"
+          mkdir -p "$TREE/assets/stack"
+          git clone -q --depth 1 "https://git.idems.international/IDEMSInternational/$STACK_BANK.git" "$TREE/assets/stack/$STACK_BANK"
+          echo "$STACK_BANK at $(git -C "$TREE/assets/stack/$STACK_BANK" rev-parse --short HEAD)"
+          rm -rf "$TREE/assets/stack/$STACK_BANK/.git"
 
       - name: Build the site
         shell: bash
