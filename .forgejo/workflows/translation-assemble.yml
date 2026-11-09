@@ -1,0 +1,126 @@
+# Combines the books a matrix of jobs built, and publishes the site
+# (IDEMSInternational/svc#391). The per-book half is the composite action
+# .forgejo/actions/translation-book; each matrix job uploads its result as the
+# artifact `book-<name>`. This job, called after them in the same run:
+#
+#   jobs:
+#     plan:  ...                       # outputs `books`, a JSON list of names
+#     book:
+#       needs: plan
+#       strategy: { fail-fast: false, matrix: { name: "${{ fromJSON(needs.plan.outputs.books) }}" } }
+#       ...                            # translate + the action, upload book-<name>
+#     site:
+#       needs: [plan, book]
+#       if: ${{ !cancelled() }}
+#       uses: IDEMSInternational/svc-actions/.forgejo/workflows/translation-assemble.yml@main
+#       secrets: inherit
+#
+# It runs even if some books failed: a book with no artifact is carried over
+# from the live site's archive (translation_site.py), so a failure leaves the
+# old version online rather than deleting the book. The run still shows the
+# failed job. Replaces translation-site.yml for repositories that build per
+# book; that workflow is unchanged.
+#
+#   secrets.TRANSLATE_READ_TOKEN, else secrets.VARIANT_BUILD_READ_TOKEN
+#       read access to IDEMSInternational/svc.
+#   secrets.PAGES_TOKEN
+#       write:repository on the translation repository, to publish.
+name: translation assemble
+
+on:
+  workflow_call:
+    inputs:
+      keep-config:
+        description: >-
+          Every book that should be online, as a translate.config.json-shaped
+          file in the caller's checkout. A live book in this list with no
+          artifact this run is carried over; a book in neither is removed.
+        type: string
+        default: translate/translate.config.all.json
+      svc-ref:
+        description: The branch, tag or commit of svc to use.
+        type: string
+        default: main
+      publish:
+        description: Publish from a branch other than main too (a manual run).
+        type: boolean
+        default: false
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: translate
+
+      - uses: actions/download-artifact@v3
+        with:
+          path: parts
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Gather the books and fetch svc
+        env:
+          READ_TOKEN: ${{ secrets.TRANSLATE_READ_TOKEN || secrets.VARIANT_BUILD_READ_TOKEN }}
+          SVC_REF: ${{ inputs.svc-ref }}
+        run: |
+          mkdir -p dist
+          for d in parts/book-*/; do [ -d "$d" ] && cp "$d"* dist/; done
+          if ! ls dist/*.tar.gz >/dev/null 2>&1; then
+            echo "No book was built or reused, so there is nothing new to publish."
+            exit 1
+          fi
+          umask 077
+          printf 'https://x-access-token:%s@git.idems.international\n' "$READ_TOKEN" >"$HOME/.git-credentials"
+          git config --global credential.helper store
+          git init -q svc
+          git -C svc fetch -q --depth 1 https://git.idems.international/IDEMSInternational/svc.git "$SVC_REF"
+          git -C svc checkout -q FETCH_HEAD
+
+      - name: Carry over the books this run did not build
+        env:
+          KEEP: ${{ inputs.keep-config }}
+        run: |
+          owner=$(printf '%s' "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')
+          site="https://${owner}.pages.idems.international/${GITHUB_REPOSITORY#*/}"
+          lang=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["target_lang"])' "$KEEP")
+          built=$(for f in dist/*-"$lang".tar.gz; do b=$(basename "$f" .tar.gz); echo "${b%-$lang}"; done | tr '\n' ' ')
+          python svc/scripts/translation_site.py carry --site "$site" --keep "$KEEP" \
+            --lang "$lang" --built $built --into dist
+
+      - name: Combine into one site
+        run: |
+          python svc/scripts/translation_site.py assemble --dist dist --repo "${GITHUB_REPOSITORY#*/}" --out site
+          (cd site && tar -czf ../dist/site.tar.gz *)
+
+      - name: Keep the archives for review
+        # v3, deliberately: Forgejo's artifact backend does not implement v4's API.
+        uses: actions/upload-artifact@v3
+        with:
+          name: translated-sites
+          path: dist
+          retention-days: 14
+
+      - name: Publish the sites
+        if: github.ref == 'refs/heads/main' || inputs.publish
+        shell: bash
+        env:
+          FORGE_TOKEN: ${{ secrets.PAGES_TOKEN }}
+        run: |
+          FORGE_TOKEN=$(printf '%s' "$FORGE_TOKEN" | tr -d '[:space:]')
+          if [ -z "$FORGE_TOKEN" ]; then
+            echo "Not configured: set the Actions secret PAGES_TOKEN to a token with"
+            echo "write:repository on this repository."
+            exit 1
+          fi
+          owner=$(printf '%s' "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')
+          site="https://${owner}.pages.idems.international/${GITHUB_REPOSITORY#*/}/"
+          curl --fail-with-body -sS -X PUT \
+            -H "Content-Type: application/x-tar+gzip" \
+            -H "Forge-Authorization: token $FORGE_TOKEN" \
+            --data-binary @dist/site.tar.gz "$site"
+          echo "Published $site"
+          for d in site/*/; do echo "  -> ${site}$(basename "$d")/"; done
