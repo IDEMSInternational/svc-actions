@@ -1,0 +1,66 @@
+# Combines the books a matrix of jobs built and carries over the rest
+# (IDEMSInternational/svc#391). The caller's job has already checked out the
+# translation repository at `translate/`, downloaded every artifact into
+# `parts/` (each matrix job uploads `book-<name>`), and set up Python. This
+# leaves site/ and dist/site.tar.gz for the caller to upload and publish.
+#
+# It is a composite action, not a reusable workflow, so the caller's job can say
+# `if: always()` and still run when some books failed: a book with no artifact
+# is carried over from the live site's archive, so a failure leaves the old
+# version online instead of deleting the book.
+name: translation assemble
+description: Combine per-book archives, carrying over live books that were not built, into one site archive.
+inputs:
+  read-token:
+    description: Read access to IDEMSInternational/svc.
+    required: true
+  keep-config:
+    description: >-
+      Every book that should be online, as a translate.config.json-shaped file.
+      A live book in this list with no artifact this run is carried over; a book
+      in neither is removed.
+    default: translate/translate.config.all.json
+  svc-ref:
+    description: The branch, tag or commit of svc to use.
+    default: main
+runs:
+  using: composite
+  steps:
+    - name: Gather the books and fetch svc
+      shell: bash
+      env:
+        READ_TOKEN: ${{ inputs.read-token }}
+        SVC_REF: ${{ inputs.svc-ref }}
+      run: |
+        mkdir -p dist
+        for d in parts/book-*/; do
+          if [ -d "$d" ]; then cp "$d"* dist/; fi
+        done
+        if ! ls dist/*.tar.gz >/dev/null 2>&1; then
+          echo "No book was built or reused, so there is nothing new to publish."
+          exit 1
+        fi
+        umask 077
+        printf 'https://x-access-token:%s@git.idems.international\n' "$READ_TOKEN" >"$HOME/.git-credentials"
+        git config --global credential.helper store
+        git init -q svc
+        git -C svc fetch -q --depth 1 https://git.idems.international/IDEMSInternational/svc.git "$SVC_REF"
+        git -C svc checkout -q FETCH_HEAD
+
+    - name: Carry over the books this run did not build
+      shell: bash
+      env:
+        KEEP: ${{ inputs.keep-config }}
+      run: |
+        owner=$(printf '%s' "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')
+        site="https://${owner}.pages.idems.international/${GITHUB_REPOSITORY#*/}"
+        lang=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["target_lang"])' "$KEEP")
+        built=$(for f in dist/*-"$lang".tar.gz; do b=$(basename "$f" .tar.gz); echo "${b%-$lang}"; done | tr '\n' ' ')
+        python svc/scripts/translation_site.py carry --site "$site" --keep "$KEEP" \
+          --lang "$lang" --built $built --into dist
+
+    - name: Combine into one site
+      shell: bash
+      run: |
+        python svc/scripts/translation_site.py assemble --dist dist --repo "${GITHUB_REPOSITORY#*/}" --out site
+        (cd site && tar -czf ../dist/site.tar.gz *)
