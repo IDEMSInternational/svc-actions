@@ -50,6 +50,12 @@ runs:
         git -C svc fetch -q --depth 1 https://git.idems.international/IDEMSInternational/svc.git "$SVC_REF"
         git -C svc checkout -q FETCH_HEAD
 
+    - name: Install the script's one dependency
+      # translation_site.py talks to Forgejo's release API with httpx. The caller's
+      # job has not installed svc, which is where httpx normally comes from.
+      shell: bash
+      run: pip install -q httpx
+
     - name: Carry over the books this run did not build
       shell: bash
       env:
