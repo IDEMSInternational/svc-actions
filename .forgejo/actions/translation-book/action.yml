@@ -1,0 +1,110 @@
+# Builds ONE translated book as a site archive, for a matrix job
+# (IDEMSInternational/svc#391). The caller has already translated it into
+# translated/<name>, with the translation repository checked out at
+# `translate/` and svc cloned at `svc/`. This resolves the source in its own
+# language, then either reuses the live site's build of it (unchanged key) or
+# builds it through svc's svc-id layer with the comment and edit tool, and
+# leaves dist/<name>-<lang>.tar.gz and dist/<name>-<lang>.key for the caller to
+# upload. Combining and publishing is translation-assemble.yml's job.
+name: translation book
+description: Build one translated PreTeXt project as a site archive, or reuse the published one if unchanged.
+inputs:
+  name:
+    description: The source's name in translate.config.json.
+    required: true
+  read-token:
+    description: Read access to IDEMSInternational/svc and the source repositories.
+    required: true
+  feedback:
+    description: Add the comment and edit tool.
+    default: "true"
+  target:
+    description: The target in project.ptx to build.
+    default: html
+  svc-ref:
+    description: The branch, tag or commit of svc to build with.
+    default: main
+  feedback-editors:
+    description: Logins shown the editor, beyond collaborators (the caller's vars.FEEDBACK_EDITORS).
+    default: ""
+  config:
+    description: The translation repository's config, relative to its checkout.
+    default: translate/translate.config.json
+runs:
+  using: composite
+  steps:
+    - name: Resolve the source in its own language
+      shell: bash
+      env:
+        READ_TOKEN: ${{ inputs.read-token }}
+        SVC_REF: ${{ inputs.svc-ref }}
+        NAME: ${{ inputs.name }}
+        CONFIG: ${{ inputs.config }}
+      run: |
+        umask 077
+        printf 'https://x-access-token:%s@git.idems.international\n' "$READ_TOKEN" >"$HOME/.git-credentials"
+        git config --global credential.helper store
+        git config --global --add safe.directory '*'
+        git -C svc fetch -q --depth 1 origin "$SVC_REF"
+        git -C svc checkout -q FETCH_HEAD
+        echo "svc at $(git -C svc rev-parse --short HEAD) ($SVC_REF)"
+        pip install --no-cache-dir "pretext==2.52.3" ./svc
+        python - <<'PY'
+        import json, os
+        c = json.load(open(os.environ["CONFIG"], encoding="utf-8"))
+        c["sources"] = [s for s in c["sources"] if s["name"] == os.environ["NAME"]]
+        assert c["sources"], f"{os.environ['NAME']} is not in {os.environ['CONFIG']}"
+        json.dump(c, open("book.config.json", "w", encoding="utf-8"))
+        PY
+        python svc/scripts/translation_sources.py --config book.config.json --into content
+
+    - name: Reuse the published build, or build
+      shell: bash
+      env:
+        FEEDBACK: ${{ inputs.feedback }}
+        TARGET: ${{ inputs.target }}
+        SVC_FEEDBACK_RELAY: ${{ inputs.feedback == 'true' && 'https://script.google.com/macros/s/AKfycbxvsnpfkSkJBGklgPhPQa-zpuYFGTqDSdzHyVlMQDhnCFJ1ElTrBvMTP27AopFxCQiSOA/exec' || '' }}
+        SVC_FEEDBACK_VISIBILITY: ${{ github.event.repository.private && 'private' || 'public' }}
+        FORGEJO_TOKEN: ${{ github.token }}
+        FORGEJO_CONTENT_TOKEN: ${{ inputs.read-token }}
+        FEEDBACK_EDITORS: ${{ inputs.feedback-editors }}
+      # --no-generate: generated assets come committed in the sources.
+      run: |
+        mkdir -p dist
+        owner=$(printf '%s' "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')
+        site="https://${owner}.pages.idems.international/${GITHUB_REPOSITORY#*/}"
+        svc_sha=$(git -C svc rev-parse HEAD)
+        IFS=$'\t' read -r name repo lang source_lang content_source <content/sources.tsv
+        project="translated/$name"
+        key=$(python svc/scripts/translation_site.py key --project "$project" \
+          --content "content/$name/tree" --extra "svc=$svc_sha" --extra "target=$TARGET" \
+          --extra "feedback=$FEEDBACK" --extra "lang=$source_lang-$lang" --extra "repo=$repo" \
+          --extra "pretext=2.52.3")
+        if python svc/scripts/translation_site.py restore --site "$site" --name "$name" \
+             --lang "$lang" --key "$key" --out "dist/$name-$lang.tar.gz"; then
+          echo "=== $name: unchanged, reusing the published build ==="
+          echo "$key" >"dist/$name-$lang.key"
+          exit 0
+        fi
+        echo "=== $name ($source_lang -> $lang), content from $repo ==="
+        mkdir -p "$project/xsl" "$project/tools"
+        cp svc/scripts/base/xsl/svc-id-attributes.xsl "$project/xsl/"
+        cp svc/scripts/base/tools/with_svc_layer.py svc/scripts/base/tools/package_site.py "$project/tools/"
+        rm -rf "$project/feedback"
+        cp -r svc/scripts/base/feedback "$project/"
+        out=$(cd "$project" && python -c 'import sys; sys.path.insert(0, "tools")
+        from with_svc_layer import output_dir
+        print(output_dir(open("project.ptx", "rb").read(), sys.argv[1]).as_posix())' "$TARGET")
+        if [ "$FEEDBACK" = true ]; then
+          (cd "$project" && python tools/with_svc_layer.py --target "$TARGET" \
+            --feedback-repo "$GITHUB_REPOSITORY" --feedback-content-repo "$repo" \
+            --feedback-lang "$lang" --feedback-source-lang "$source_lang" \
+            --feedback-content-source "$GITHUB_WORKSPACE/$content_source" \
+            pretext build "$TARGET" --no-generate)
+          python svc/scripts/site_feedback.py site-json --out "$project/$out/_svc-feedback" \
+            --content-repo "$repo" --book "content/$name/book" --resolved "content/$name/tree"
+        else
+          (cd "$project" && python tools/with_svc_layer.py --target "$TARGET" pretext build "$TARGET" --no-generate)
+        fi
+        python svc/scripts/base/tools/package_site.py "$project/$out" "dist/$name-$lang.tar.gz"
+        echo "$key" >"dist/$name-$lang.key"
