@@ -56,6 +56,15 @@ on:
         description: The branch, tag or commit of svc to build with.
         type: string
         default: main
+      keep-config:
+        description: >-
+          Every book that should be online, as a translate.config.json-shaped
+          file in the caller's checkout. A book on the live site that is in
+          this list but was not built this run (the artifact holds only the
+          selected books) is carried over from its archive, not deleted. A
+          book in neither this list nor the artifact is removed from the site.
+        type: string
+        default: translate/translate.config.all.json
       publish:
         description: >-
           Publish from a branch other than main too. To publish a manual run,
@@ -124,8 +133,24 @@ jobs:
         # be edited from the site (svc#331): the wrapper asks the forge.
         run: |
           mkdir -p dist
+          owner=$(printf '%s' "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')
+          site="https://${owner}.pages.idems.international/${GITHUB_REPOSITORY#*/}"
+          svc_sha=$(git -C svc rev-parse HEAD)
           while IFS=$'\t' read -r -u 3 name repo lang source_lang content_source; do
             project="translated/$name"
+            # A book whose inputs are unchanged since the live site was built
+            # is reused from its archive on that site, not built again. Any
+            # failure to read it is a miss: the book is simply built.
+            key=$(python svc/scripts/translation_site.py key --project "$project" \
+              --content "content/$name/tree" --extra "svc=$svc_sha" --extra "target=$TARGET" \
+              --extra "feedback=$FEEDBACK" --extra "lang=$source_lang-$lang" --extra "repo=$repo" \
+              --extra "pretext=2.52.3")
+            if python svc/scripts/translation_site.py restore --site "$site" --name "$name" \
+                 --lang "$lang" --key "$key" --out "dist/$name-$lang.tar.gz"; then
+              echo "=== $name: unchanged, reusing the published build ==="
+              echo "$key" >"dist/$name-$lang.key"
+              continue
+            fi
             echo "=== $name ($source_lang -> $lang), content from $repo ==="
             mkdir -p "$project/xsl" "$project/tools"
             cp svc/scripts/base/xsl/svc-id-attributes.xsl "$project/xsl/"
@@ -147,41 +172,35 @@ jobs:
               (cd "$project" && python tools/with_svc_layer.py --target "$TARGET" pretext build "$TARGET" --no-generate)
             fi
             python svc/scripts/base/tools/package_site.py "$project/$out" "dist/$name-$lang.tar.gz"
+            echo "$key" >"dist/$name-$lang.key"
           done 3< content/sources.tsv
+
+      - name: Carry over the books this run did not build
+        # The artifact holds only the books selected in translate.config.json,
+        # and publishing replaces the whole site. So every other book that is
+        # live and still listed in keep-config is fetched from the site's own
+        # archives and published again, untouched. If a live book has no
+        # archive this stops: publishing without it would delete it. (The
+        # first run after this was introduced must build every live book once.)
+        env:
+          KEEP: ${{ inputs.keep-config }}
+        run: |
+          owner=$(printf '%s' "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')
+          site="https://${owner}.pages.idems.international/${GITHUB_REPOSITORY#*/}"
+          lang=$(cut -f3 content/sources.tsv | head -1)
+          built=$(cut -f1 content/sources.tsv | tr '\n' ' ')
+          python svc/scripts/translation_site.py carry --site "$site" --keep "$KEEP" \
+            --lang "$lang" --built $built --into dist
 
       - name: Combine into one site, nested by source
         # pages.idems.international only serves a path named for a real
-        # repository, so every source goes under the translation repository's.
-        # Also writes a root index.html linking to each one: visiting the
-        # bare repository path otherwise 404s, since nothing before this
-        # ever published anything at the root itself. Each link's text is
-        # scraped from that source's own index.html (its og/twitter title
-        # meta, which pretext build always writes) rather than the bare
-        # slug, falling back to the slug if a source's index.html doesn't
-        # have one for some reason.
+        # repository, so every book goes under the translation repository's.
+        # translation_site.py unpacks each archive in dist/ (built, reused or
+        # carried over alike), writes a root index linking to each one with its
+        # title scraped from the book's own index.html, and keeps every
+        # archive and its build key under _archives/ for the next run.
         run: |
-          mkdir -p site
-          {
-            echo '<!DOCTYPE html>'
-            echo '<html lang="en">'
-            echo "<head><meta charset=\"utf-8\"><title>${GITHUB_REPOSITORY#*/}</title></head>"
-            echo '<body>'
-            echo "<h1>${GITHUB_REPOSITORY#*/}</h1>"
-            echo '<ul>'
-          } >site/index.html
-          for archive in dist/*.tar.gz; do
-            name="$(basename "$archive" .tar.gz)"
-            mkdir -p "site/$name"
-            tar -xzf "$archive" -C "site/$name"
-            title=$(grep -o '<meta property="og:title" content="[^"]*"' "site/$name/index.html" 2>/dev/null \
-              | head -1 | sed -E 's/.*content="([^"]*)".*/\1/')
-            printf '<li><a href="%s/">%s</a></li>\n' "$name" "${title:-$name}" >>site/index.html
-          done
-          {
-            echo '</ul>'
-            echo '</body>'
-            echo '</html>'
-          } >>site/index.html
+          python svc/scripts/translation_site.py assemble --dist dist --repo "${GITHUB_REPOSITORY#*/}" --out site
           (cd site && tar -czf ../dist/site.tar.gz *)
 
       - name: Keep the archives for review
