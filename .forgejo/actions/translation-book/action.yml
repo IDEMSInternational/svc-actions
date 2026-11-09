@@ -45,10 +45,16 @@ runs:
         printf 'https://x-access-token:%s@git.idems.international\n' "$READ_TOKEN" >"$HOME/.git-credentials"
         git config --global credential.helper store
         git config --global --add safe.directory '*'
+        before=$(git -C svc rev-parse HEAD)
         git -C svc fetch -q --depth 1 origin "$SVC_REF"
         git -C svc checkout -q FETCH_HEAD
         echo "svc at $(git -C svc rev-parse --short HEAD) ($SVC_REF)"
-        pip install --no-cache-dir "pretext==2.52.3" ./svc
+        # Reinstall svc only if the caller installed a different commit: the
+        # translate step has usually installed this one already.
+        if [ "$before" != "$(git -C svc rev-parse HEAD)" ]; then
+          pip install --no-cache-dir ./svc
+        fi
+        pip install -q "pretext==2.52.3"
         python - <<'PY'
         import json, os
         c = json.load(open(os.environ["CONFIG"], encoding="utf-8"))
