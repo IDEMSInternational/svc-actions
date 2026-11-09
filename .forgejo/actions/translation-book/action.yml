@@ -83,11 +83,13 @@ runs:
       # --no-generate: generated assets come committed in the sources.
       run: |
         mkdir -p dist
-        svc_sha=$(git -C svc rev-parse HEAD)
+        # Only the svc files the build reads, not the commit: an unrelated svc merge
+        # must not rebuild every book (svc#397).
+        svc_fp=$(python svc/scripts/translation_site.py fingerprint --svc svc)
         IFS=$'\t' read -r name repo lang source_lang content_source <content/sources.tsv
         project="translated/$name"
         key=$(python svc/scripts/translation_site.py key --project "$project" \
-          --content "content/$name/tree" --extra "svc=$svc_sha" --extra "target=$TARGET" \
+          --content "content/$name/tree" --extra "svc=$svc_fp" --extra "target=$TARGET" \
           --extra "feedback=$FEEDBACK" --extra "lang=$source_lang-$lang" --extra "repo=$repo" \
           --extra "pretext=2.52.3")
         if python svc/scripts/translation_site.py cache-restore --repo "$GITHUB_REPOSITORY" --name "$name" \
