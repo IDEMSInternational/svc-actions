@@ -23,6 +23,9 @@ inputs:
   svc-ref:
     description: The branch, tag or commit of svc to use.
     default: main
+  cache-token:
+    description: A token that may read releases on the translation repository (svc#394).
+    default: ""
 runs:
   using: composite
   steps:
@@ -51,12 +54,13 @@ runs:
       shell: bash
       env:
         KEEP: ${{ inputs.keep-config }}
+        FORGE_TOKEN: ${{ inputs.cache-token }}
       run: |
         owner=$(printf '%s' "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')
         site="https://${owner}.pages.idems.international/${GITHUB_REPOSITORY#*/}"
         lang=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["target_lang"])' "$KEEP")
         built=$(for f in dist/*-"$lang".tar.gz; do b=$(basename "$f" .tar.gz); echo "${b%-$lang}"; done | tr '\n' ' ')
-        python svc/scripts/translation_site.py carry --site "$site" --keep "$KEEP" \
+        python svc/scripts/translation_site.py cache-carry --repo "$GITHUB_REPOSITORY" --site "$site" --keep "$KEEP" \
           --lang "$lang" --built $built --into dist
 
     - name: Combine into one site

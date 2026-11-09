@@ -24,6 +24,11 @@ inputs:
   svc-ref:
     description: The branch, tag or commit of svc to build with.
     default: main
+  cache-token:
+    description: >-
+      A token that may write releases on the translation repository, to keep each
+      built book (svc#394). Without one, nothing is cached and every run builds.
+    default: ""
   feedback-editors:
     description: Logins shown the editor, beyond collaborators (the caller's vars.FEEDBACK_EDITORS).
     default: ""
@@ -74,11 +79,10 @@ runs:
         FORGEJO_TOKEN: ${{ github.token }}
         FORGEJO_CONTENT_TOKEN: ${{ inputs.read-token }}
         FEEDBACK_EDITORS: ${{ inputs.feedback-editors }}
+        FORGE_TOKEN: ${{ inputs.cache-token }}
       # --no-generate: generated assets come committed in the sources.
       run: |
         mkdir -p dist
-        owner=$(printf '%s' "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')
-        site="https://${owner}.pages.idems.international/${GITHUB_REPOSITORY#*/}"
         svc_sha=$(git -C svc rev-parse HEAD)
         IFS=$'\t' read -r name repo lang source_lang content_source <content/sources.tsv
         project="translated/$name"
@@ -86,7 +90,7 @@ runs:
           --content "content/$name/tree" --extra "svc=$svc_sha" --extra "target=$TARGET" \
           --extra "feedback=$FEEDBACK" --extra "lang=$source_lang-$lang" --extra "repo=$repo" \
           --extra "pretext=2.52.3")
-        if python svc/scripts/translation_site.py restore --site "$site" --name "$name" \
+        if python svc/scripts/translation_site.py cache-restore --repo "$GITHUB_REPOSITORY" --name "$name" \
              --lang "$lang" --key "$key" --out "dist/$name-$lang.tar.gz"; then
           echo "=== $name: unchanged, reusing the published build ==="
           echo "$key" >"dist/$name-$lang.key"
@@ -114,3 +118,7 @@ runs:
         fi
         python svc/scripts/base/tools/package_site.py "$project/$out" "dist/$name-$lang.tar.gz"
         echo "$key" >"dist/$name-$lang.key"
+        # Kept now, not at publish: a failed publish then loses nothing. Not fatal.
+        python svc/scripts/translation_site.py cache-put --repo "$GITHUB_REPOSITORY" --name "$name" \
+          --lang "$lang" --key "$key" --archive "dist/$name-$lang.tar.gz" \
+          || echo "warning: could not cache $name; the next run will build it again"
