@@ -251,6 +251,45 @@ jobs:
           # `generate stack` does. The web build doesn't need them (it uses the
           # live STACK server); the print build reads them.
           if [ -d assets/stack ]; then pretext generate stack; fi
+          # LaTeX cannot include a GIF. Replace each one, in this throwaway tree
+          # only, by a PNG of its first frame and point the sources at it. The
+          # web site, already published, keeps the animation.
+          pip install --no-cache-dir -q pillow
+          python - <<'PY'
+          import pathlib, re
+          from PIL import Image
+          skip = {"output", ".git", "interactive"}
+          gifs = [p for p in pathlib.Path(".").rglob("*.gif") if not skip & set(p.parts)]
+          for g in gifs:
+              with Image.open(g) as im:
+                  im.seek(0)
+                  im.convert("RGBA").save(g.with_suffix(".png"))
+          print(f"Replaced {len(gifs)} GIF(s) by a still PNG")
+          pat = re.compile(r"""(source=["'][^"']*)\.gif(["'])""", re.I)
+          n = 0
+          for root in ("source", "generated-assets"):
+              for f in pathlib.Path(root).rglob("*.ptx"):
+                  t = f.read_text(encoding="utf-8")
+                  u = pat.sub(r"\1.png\2", t)
+                  if u != t:
+                      f.write_text(u, encoding="utf-8", newline="")
+                      n += 1
+          print(f"Pointed {n} file(s) at the PNGs")
+          # A STACK question gives an image's width in pixels; pretext turns it
+          # into a percentage of a fixed page width, so anything wider than
+          # about 480 px comes out above 100% and is a PTX:ERROR. Cap it.
+          wide = re.compile(r'(<image\b[^>]*?\bwidth=")(\d+(?:\.\d+)?)%"')
+          def cap(m):
+              return m.group(0) if float(m.group(2)) <= 100 else m.group(1) + '100%"'
+          n = 0
+          for f in pathlib.Path("generated-assets").rglob("*.ptx"):
+              t = f.read_text(encoding="utf-8")
+              u = wide.sub(cap, t)
+              if u != t:
+                  f.write_text(u, encoding="utf-8", newline="")
+                  n += 1
+          print(f"Capped over-wide images in {n} STACK file(s)")
+          PY
           mkdir -p "$GITHUB_WORKSPACE/dist"
           set +e
           pretext build print
