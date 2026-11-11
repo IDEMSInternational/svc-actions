@@ -1,0 +1,133 @@
+# Builds ONE translated book as a PDF, for a matrix job
+# (IDEMSInternational/svc#454; the English books' build.yml did it in #453).
+# Called by the translation repository's workflow after translation-book, in the
+# same job: the translated project is already at translated/<name>.
+#
+#   - uses: IDEMSInternational/svc-actions/.forgejo/actions/translation-pdf@main
+#     continue-on-error: true       # a PDF problem must never stop the site
+#     with:
+#       name: ${{ matrix.name }}
+#   - uses: actions/upload-artifact@v3
+#     if: always()
+#     with: { name: "pdf-${{ matrix.name }}", path: pdf, if-no-files-found: ignore }
+#   - uses: actions/upload-artifact@v3
+#     if: always()
+#     with: { name: "pdf-logs-${{ matrix.name }}", path: pdf-logs, if-no-files-found: ignore }
+#
+# It leaves pdf/<name>-<lang>.pdf, or pdf-logs/ with the LaTeX log and .tex if
+# the build failed. The PDF is NOT written into dist/ or the book-<name>
+# artifact: translation-assemble copies everything in those into the published
+# site. It does not depend on the site cache, so a book reused from the cache
+# still gets its PDF.
+#
+# The preparation of the tree (STACK files, GIFs, over-wide images) repeats
+# build.yml's; if you change one, change the other.
+name: translation pdf
+description: Build one translated PreTeXt project's print target as a PDF.
+inputs:
+  name:
+    description: The source's name in translate.config.json.
+    required: true
+  target:
+    description: The print target in the translated project's project.ptx.
+    default: print
+  config:
+    description: The config this job wrote (translation-book writes book.config.json), for the target language.
+    default: book.config.json
+runs:
+  using: composite
+  steps:
+    - name: Install LaTeX, with French
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends \
+          texlive-xetex texlive-latex-extra texlive-fonts-recommended \
+          texlive-fonts-extra texlive-science texlive-lang-french \
+          fonts-dejavu fonts-noto-core latexmk fontconfig
+        # The print build screenshots interactive figures with Chromium, which
+        # pretext downloads itself; the runner lacks its system libraries.
+        python -m playwright install-deps chromium
+
+    - name: Build the PDF
+      shell: bash
+      env:
+        NAME: ${{ inputs.name }}
+        TARGET: ${{ inputs.target }}
+        CONFIG: ${{ inputs.config }}
+      run: |
+        project="translated/$NAME"
+        lang=$(python -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("target_lang", "fr"))' "$CONFIG" 2>/dev/null || echo fr)
+        cd "$project"
+        if ! grep -q "name=\"$TARGET\"" project.ptx; then
+          echo "$NAME has no $TARGET target, so no PDF."
+          exit 0
+        fi
+        # The target's output folder, as project.ptx declares it.
+        out=$(python -c 'import sys, xml.etree.ElementTree as ET
+        for t in ET.parse("project.ptx").getroot().iter("target"):
+            if t.get("name") == sys.argv[1]:
+                o = t.find("output-dir")
+                print((o.text if o is not None and o.text else "output/" + sys.argv[1]).strip())
+                break' "$TARGET")
+        echo "Output folder: $out"
+        # `pretext build` never makes the STACK .ptx files, only an explicit
+        # `generate stack` does; the print build reads them.
+        if [ -d assets/stack ]; then pretext generate stack; fi
+        # LaTeX cannot include a GIF: use a PNG of its first frame, in this
+        # throwaway tree only.
+        pip install --no-cache-dir -q pillow
+        python - <<'PY'
+        import pathlib, re
+        from PIL import Image
+        skip = {"output", ".git", "interactive"}
+        gifs = [p for p in pathlib.Path(".").rglob("*.gif") if not skip & set(p.parts)]
+        for g in gifs:
+            with Image.open(g) as im:
+                im.seek(0)
+                im.convert("RGBA").save(g.with_suffix(".png"))
+        print(f"Replaced {len(gifs)} GIF(s) by a still PNG")
+        pat = re.compile(r"""(source=["'][^"']*)\.gif(["'])""", re.I)
+        n = 0
+        for root in ("source", "generated-assets"):
+            for f in pathlib.Path(root).rglob("*.ptx"):
+                t = f.read_text(encoding="utf-8")
+                u = pat.sub(r"\1.png\2", t)
+                if u != t:
+                    f.write_text(u, encoding="utf-8", newline="")
+                    n += 1
+        print(f"Pointed {n} file(s) at the PNGs")
+        # A STACK question gives an image's width in pixels; pretext turns it
+        # into a percentage of a fixed page width, so a wide one comes out above
+        # 100% and is a PTX:ERROR. Cap it.
+        wide = re.compile(r'(<image\b[^>]*?\bwidth=")(\d+(?:\.\d+)?)%"')
+        def cap(m):
+            return m.group(0) if float(m.group(2)) <= 100 else m.group(1) + '100%"'
+        n = 0
+        for f in pathlib.Path("generated-assets").rglob("*.ptx"):
+            t = f.read_text(encoding="utf-8")
+            u = wide.sub(cap, t)
+            if u != t:
+                f.write_text(u, encoding="utf-8", newline="")
+                n += 1
+        print(f"Capped over-wide images in {n} STACK file(s)")
+        PY
+        set +e
+        pretext build "$TARGET"
+        status=$?
+        set -e
+        if [ "$status" -ne 0 ]; then
+          # pretext only says that LaTeX failed; the reason is in its log.
+          log=$(ls "$out"/*.log 2>/dev/null | head -1)
+          if [ -n "$log" ]; then
+            echo "=== LaTeX errors from $log ==="
+            grep -n -A6 '^!' "$log" | head -150
+            mkdir -p "$GITHUB_WORKSPACE/pdf-logs"
+            cp "$out"/*.log "$out"/*.tex "$GITHUB_WORKSPACE/pdf-logs/" 2>/dev/null
+          fi
+          exit "$status"
+        fi
+        pdf=$(ls "$out"/*.pdf | head -1)
+        mkdir -p "$GITHUB_WORKSPACE/pdf"
+        cp "$pdf" "$GITHUB_WORKSPACE/pdf/$NAME-$lang.pdf"
+        echo "PDF $(du -h "$GITHUB_WORKSPACE/pdf/$NAME-$lang.pdf" | cut -f1): $NAME-$lang.pdf"
