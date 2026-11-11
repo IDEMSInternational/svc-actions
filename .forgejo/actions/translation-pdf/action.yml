@@ -71,6 +71,21 @@ runs:
                 print((o.text if o is not None and o.text else "output/" + sys.argv[1]).strip())
                 break' "$TARGET")
         echo "Output folder: $out"
+        # A book's STACK questions live in a question bank repository that its
+        # sources name by path (stack/<repository>/...), and the resolved tree
+        # does not carry it. English books are given it by build.yml's
+        # `stack-bank`; here, find each bank the sources name and clone it, with
+        # the credentials translation-book stored. A name that is not a
+        # repository (a plain folder under stack/) is skipped.
+        for bank in $(grep -rhoE 'stack/[A-Za-z0-9_.-]+/' source 2>/dev/null | sed -E 's#^stack/(.*)/$#\1#' | sort -u); do
+          [ -d "assets/stack/$bank" ] && continue
+          if git clone -q --depth 1 "https://git.idems.international/IDEMSInternational/$bank.git" "assets/stack/$bank" 2>/dev/null; then
+            echo "STACK bank $bank at $(git -C "assets/stack/$bank" rev-parse --short HEAD)"
+            rm -rf "assets/stack/$bank/.git"
+          else
+            echo "No repository named $bank; leaving it."
+          fi
+        done
         # `pretext build` never makes the STACK .ptx files, only an explicit
         # `generate stack` does; the print build reads them.
         if [ -d assets/stack ]; then pretext generate stack; fi
