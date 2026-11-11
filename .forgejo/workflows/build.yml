@@ -232,6 +232,9 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends             texlive-xetex texlive-latex-extra texlive-fonts-recommended             texlive-fonts-extra texlive-science fonts-dejavu fonts-noto-core             latexmk fontconfig
+          # The print build screenshots interactive figures with Chromium, which
+          # pretext has already downloaded; the runner lacks its system libraries.
+          python -m playwright install-deps chromium
 
       - name: Build the PDF
         if: inputs.pdf
@@ -244,6 +247,10 @@ jobs:
             echo "This book has no print target, so no PDF."
             exit 0
           fi
+          # `pretext build` never makes the STACK .ptx files, only an explicit
+          # `generate stack` does. The web build doesn't need them (it uses the
+          # live STACK server); the print build reads them.
+          if [ -d assets/stack ]; then pretext generate stack; fi
           pretext build print
           mkdir -p "$GITHUB_WORKSPACE/dist"
           pdf=$(ls output/print/*.pdf | head -1)
