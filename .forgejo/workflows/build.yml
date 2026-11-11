@@ -40,6 +40,13 @@ on:
           logged at most this many PTX:ERROR lines. Empty means any failure fails.
         type: string
         default: ""
+      pdf:
+        description: >-
+          Also build the book's `print` target as a PDF and keep it as the
+          artifact `book-pdf`. It runs after the site is published and can fail
+          without failing the run. Skipped for a book with no `print` target.
+        type: boolean
+        default: true
       svc-ref:
         description: The branch, tag or commit of svc to build with.
         type: string
@@ -214,3 +221,42 @@ jobs:
             -H "Forge-Authorization: token $FORGE_TOKEN" \
             --data-binary @dist/site.tar.gz "$site"
           echo "Published $site"
+
+      - name: Install LaTeX for the PDF
+        # After the publish step, so nothing here can hold up the site. The
+        # tree still holds the web build's generated assets (the STACK .ptx
+        # the print build reads), which is why the PDF is built here and not
+        # in a job of its own.
+        if: inputs.pdf
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends             texlive-xetex texlive-latex-extra texlive-fonts-recommended             texlive-fonts-extra texlive-science fonts-dejavu fonts-noto-core             latexmk fontconfig
+
+      - name: Build the PDF
+        if: inputs.pdf
+        id: pdf
+        continue-on-error: true
+        shell: bash
+        run: |
+          cd "$TREE"
+          if ! grep -q 'name="print"' project.ptx; then
+            echo "This book has no print target, so no PDF."
+            exit 0
+          fi
+          pretext build print
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          pdf=$(ls output/print/*.pdf | head -1)
+          cp "$pdf" "$GITHUB_WORKSPACE/dist/book.pdf"
+          echo "PDF $(du -h "$GITHUB_WORKSPACE/dist/book.pdf" | cut -f1) from $pdf"
+
+      - name: Keep the PDF
+        if: inputs.pdf
+        continue-on-error: true
+        # v3, as above.
+        uses: actions/upload-artifact@v3
+        with:
+          name: book-pdf
+          path: dist/book.pdf
+          if-no-files-found: ignore
+          retention-days: 14

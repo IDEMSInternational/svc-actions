@@ -40,6 +40,7 @@ write them into new books.
 |---|---|---|
 | `feedback` | `false` | add the comment and edit tool to the site; keep `site-edit.yml` and `site-feedback.yml` in the book |
 | `max-ptx-errors` | (strict) | tolerate a non-zero exit from pretext if it wrote the site and logged at most this many `PTX:ERROR` lines |
+| `pdf` | `true` | also build the `print` target as a PDF, kept as the artifact `book-pdf`; runs after the site is published and cannot fail the run |
 | `svc-ref` | `main` | the svc branch, tag or commit to build with |
 
 `site-edit.yml` and `site-feedback.yml` take `svc-ref` too.
