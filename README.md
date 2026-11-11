@@ -102,3 +102,14 @@ this repository in its `uses:` line, and an svc commit in `svc-ref`.
 Changes are reviewed on GitHub. Books call the mirror at
 `git.idems.international/IDEMSInternational/svc-actions`, which pulls from
 GitHub every 10 minutes.
+
+## PDFs
+
+English books get theirs from `build.yml` (input `pdf`, default `true`), kept as the
+artifact `book-pdf`. A translated book gets one from the action
+[`translation-pdf`](.forgejo/actions/translation-pdf/action.yml), which the translation
+repository's `translate.yml` calls after `translation-book`, in the same matrix job, with
+`continue-on-error: true`, then uploads `pdf/` as `pdf-<name>` and `pdf-logs/` as
+`pdf-logs-<name>`. The PDF is kept out of `dist/` on purpose: `translation-assemble` copies
+all of `dist/` into the published site. Both are best effort and never stop the HTML site.
+The tree preparation in the two places is the same code; change both together.
