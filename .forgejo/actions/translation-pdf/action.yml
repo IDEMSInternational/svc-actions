@@ -148,6 +148,38 @@ runs:
                 f.write_text(u, encoding="utf-8", newline="")
                 n += 1
         print(f"Capped over-wide images in {n} STACK file(s)")
+        # A table whose rows have more cells than it declares columns stops LaTeX
+        # ("Extra alignment tab"); a browser does not mind. Declare the missing columns.
+        tab = re.compile(r"<tabular\b[^>]*>.*?</tabular>", re.S)
+        colre = re.compile(r"<col\b[^>]*?/>")
+        rowre = re.compile(r"<row\b[^>]*>(.*?)</row>", re.S)
+        cellre = re.compile(r"<cell\b([^>]*?)/?>")
+        spanre = re.compile(r'colspan="(\d+)"')
+        def widen(m):
+            body = m.group(0)
+            cols = list(colre.finditer(body))
+            if not cols:
+                return body
+            widest = 0
+            for r in rowre.finditer(body):
+                k = 0
+                for c in cellre.finditer(r.group(1)):
+                    s = spanre.search(c.group(1))
+                    k += int(s.group(1)) if s else 1
+                widest = max(widest, k)
+            if widest <= len(cols):
+                return body
+            end = cols[-1].end()
+            return body[:end] + '<col halign="left"/>' * (widest - len(cols)) + body[end:]
+        n = 0
+        for root in ("source", "generated-assets"):
+            for f in pathlib.Path(root).rglob("*.ptx"):
+                t = f.read_text(encoding="utf-8")
+                u = tab.sub(widen, t)
+                if u != t:
+                    f.write_text(u, encoding="utf-8", newline="")
+                    n += 1
+        print(f"Added missing columns to tables in {n} file(s)")
         PY
         set +e
         pretext build "$TARGET"
