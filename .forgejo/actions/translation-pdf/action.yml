@@ -96,13 +96,35 @@ runs:
         import pathlib, re
         from PIL import Image
         skip = {"output", ".git", "interactive"}
-        gifs = [p for p in pathlib.Path(".").rglob("*.gif") if not skip & set(p.parts)]
-        for g in gifs:
+        files = [p for p in pathlib.Path(".").rglob("*") if p.is_file() and not skip & set(p.parts)]
+        # LaTeX reads PNG, JPEG and PDF only. An animated GIF or a WebP file becomes a
+        # PNG of its first frame, and the sources are pointed at it.
+        others = [p for p in files if p.suffix.lower() in (".gif", ".webp")]
+        for g in others:
             with Image.open(g) as im:
                 im.seek(0)
                 im.convert("RGBA").save(g.with_suffix(".png"))
-        print(f"Replaced {len(gifs)} GIF(s) by a still PNG")
-        pat = re.compile(r"""(source=["'][^"']*)\.gif(["'])""", re.I)
+        print(f"Replaced {len(others)} GIF/WebP file(s) by a still PNG")
+        # A file named .png or .jpg can hold another format (a WebP renamed .png turns
+        # up): browsers cope, LaTeX does not. Rewrite it in the format its name says.
+        fixed = 0
+        for p in files:
+            ext = p.suffix.lower()
+            if ext not in (".png", ".jpg", ".jpeg"):
+                continue
+            try:
+                with Image.open(p) as im:
+                    if im.format in ("PNG", "JPEG"):
+                        continue
+                    im.seek(0)
+                    want = "PNG" if ext == ".png" else "JPEG"
+                    out = im.convert("RGBA" if want == "PNG" else "RGB")
+            except Exception:
+                continue
+            out.save(p, want)
+            fixed += 1
+        print(f"Rewrote {fixed} image(s) whose content did not match their name")
+        pat = re.compile(r"""(source=["'][^"']*)\.(?:gif|webp)(["'])""", re.I)
         n = 0
         for root in ("source", "generated-assets"):
             for f in pathlib.Path(root).rglob("*.ptx"):
