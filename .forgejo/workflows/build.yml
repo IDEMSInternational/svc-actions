@@ -251,11 +251,36 @@ jobs:
           # `generate stack` does. The web build doesn't need them (it uses the
           # live STACK server); the print build reads them.
           if [ -d assets/stack ]; then pretext generate stack; fi
-          pretext build print
           mkdir -p "$GITHUB_WORKSPACE/dist"
+          set +e
+          pretext build print
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            # pretext only says that LaTeX failed; the reason is in its log.
+            # Show it here and keep the log and the .tex for reading offline.
+            log=$(ls output/print/*.log 2>/dev/null | head -1)
+            if [ -n "$log" ]; then
+              echo "=== LaTeX errors from $log ==="
+              grep -n -A6 '^!' "$log" | head -150
+              mkdir -p "$GITHUB_WORKSPACE/dist/pdf-logs"
+              cp output/print/*.log output/print/*.tex "$GITHUB_WORKSPACE/dist/pdf-logs/" 2>/dev/null
+            fi
+            exit "$status"
+          fi
           pdf=$(ls output/print/*.pdf | head -1)
           cp "$pdf" "$GITHUB_WORKSPACE/dist/book.pdf"
           echo "PDF $(du -h "$GITHUB_WORKSPACE/dist/book.pdf" | cut -f1) from $pdf"
+
+      - name: Keep the LaTeX log if the PDF failed
+        if: always() && inputs.pdf
+        continue-on-error: true
+        uses: actions/upload-artifact@v3
+        with:
+          name: book-pdf-logs
+          path: dist/pdf-logs
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Keep the PDF
         if: inputs.pdf
