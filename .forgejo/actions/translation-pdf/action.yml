@@ -201,13 +201,34 @@ runs:
         status=$?
         set -e
         if [ "$status" -ne 0 ]; then
-          # pretext only says that LaTeX failed; the reason is in its log.
-          log=$(ls "$out"/*.log 2>/dev/null | head -1)
-          if [ -n "$log" ]; then
-            echo "=== LaTeX errors from $log ==="
-            grep -n -A6 '^!' "$log" | head -150
-            mkdir -p "$GITHUB_WORKSPACE/pdf-logs"
-            cp "$out"/*.log "$out"/*.tex "$GITHUB_WORKSPACE/pdf-logs/" 2>/dev/null
+          # When LaTeX fails pretext deletes its scratch folder, log included, and says
+          # only that the compilation failed. So build the book's LaTeX target instead
+          # and run LaTeX in its output folder: the log then survives, is shown here,
+          # and is kept as an artifact with the .tex.
+          mkdir -p "$GITHUB_WORKSPACE/pdf-logs"
+          if grep -q 'name="print-latex"' project.ptx; then
+            # Its exit status is not what matters (a preview screenshot can time out
+            # and still leave main.tex); whether main.tex was written is.
+            pretext build print-latex >latex-build.log 2>&1 || true
+            lx=$(python -c 'import sys, xml.etree.ElementTree as ET
+        for t in ET.parse("project.ptx").getroot().iter("target"):
+            if t.get("name") == sys.argv[1]:
+                o = t.find("output-dir")
+                print((o.text if o is not None and o.text else "output/" + sys.argv[1]).strip())
+                break' print-latex)
+            if [ -f "$lx/main.tex" ]; then
+              (cd "$lx" && xelatex -interaction=nonstopmode -halt-on-error main.tex >xelatex.out 2>&1) || true
+              echo "=== LaTeX errors from $lx/main.log ==="
+              grep -n -A6 '^!' "$lx/main.log" | head -150 || true
+              echo "=== end of the LaTeX run ==="
+              tail -25 "$lx/xelatex.out" || true
+              cp "$lx/main.tex" "$lx/main.log" "$lx/xelatex.out" "$GITHUB_WORKSPACE/pdf-logs/" 2>/dev/null || true
+            else
+              echo "The print-latex target wrote no main.tex, so no LaTeX log to keep."
+              tail -15 latex-build.log || true
+            fi
+          else
+            echo "No print-latex target to rerun LaTeX with, so no LaTeX log to keep."
           fi
           exit "$status"
         fi
