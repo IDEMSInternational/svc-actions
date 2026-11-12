@@ -287,6 +287,30 @@ jobs:
               out.save(p, want)
               fixed += 1
           print(f"Rewrote {fixed} image(s) whose content did not match their name")
+          # An <image> whose file is not in the tree (a book that does not carry its
+          # generated figures) is a fatal LaTeX error ("Unable to load picture"), where
+          # the web build only shows a broken image. In this throwaway tree, put a grey
+          # placeholder naming the file where it should be, so the PDF still builds.
+          from PIL import ImageDraw
+          imgsrc = re.compile(r"""<image\b[^>]*?\bsource=["']([^"']+)["']""", re.S)
+          wanted = set()
+          for root in ("source", "generated-assets"):
+              for f in pathlib.Path(root).rglob("*.ptx"):
+                  wanted.update(imgsrc.findall(f.read_text(encoding="utf-8")))
+          made = 0
+          for rel in sorted(wanted):
+              ext = pathlib.Path(rel).suffix.lower()
+              if ext not in (".png", ".jpg", ".jpeg") or rel.startswith(("http:", "https:")):
+                  continue
+              target = pathlib.Path("assets") / rel
+              if target.is_file() and target.stat().st_size > 0:
+                  continue
+              target.parent.mkdir(parents=True, exist_ok=True)
+              im = Image.new("RGB", (800, 450), (225, 225, 225))
+              ImageDraw.Draw(im).text((20, 20), "Figure not available: " + rel, fill=(80, 80, 80))
+              im.save(target, "PNG" if ext == ".png" else "JPEG")
+              made += 1
+          print(f"Added a placeholder for {made} image(s) missing from the tree")
           pat = re.compile(r"""(source=["'][^"']*)\.(?:gif|webp)(["'])""", re.I)
           n = 0
           for root in ("source", "generated-assets"):
