@@ -180,6 +180,21 @@ runs:
                     f.write_text(u, encoding="utf-8", newline="")
                     n += 1
         print(f"Added missing columns to tables in {n} file(s)")
+        # A STACK question can carry browser-only elements: a <script> that builds a
+        # "download the data" file, the <button> that calls it, a <style>. In print the
+        # script comes out as pages of code listing, and one very long line in it stopped
+        # LaTeX ("This can't happen (vlistout)"). None of them mean anything on paper.
+        webonly = re.compile(
+            r"<script\b.*?</script>|<style\b.*?</style>|<button\b.*?</button>", re.S | re.I
+        )
+        n = 0
+        for f in pathlib.Path("generated-assets").rglob("*.ptx"):
+            t = f.read_text(encoding="utf-8")
+            u = webonly.sub("", t)
+            if u != t:
+                f.write_text(u, encoding="utf-8", newline="")
+                n += 1
+        print(f"Removed browser-only script, style and button elements from {n} STACK file(s)")
         PY
         set +e
         pretext build "$TARGET"
