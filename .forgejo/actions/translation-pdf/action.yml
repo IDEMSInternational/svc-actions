@@ -197,18 +197,9 @@ runs:
         print(f"Removed browser-only script, style and button elements from {n} STACK file(s)")
         PY
         set +e
-        pretext build "$TARGET" 2>&1 | tee print-build.log
-        status=${PIPESTATUS[0]}
+        pretext build "$TARGET"
+        status=$?
         set -e
-        # PreTeXt exits non-zero when it logged a PTX:BUG or PTX:ERROR (an open-source
-        # book's 'Exercise component mis-labeled' is the usual one), even after LaTeX
-        # ran and the PDF was written. A LaTeX failure never reaches 'Finished build',
-        # so that line plus a PDF means the book built and the exit status is noise.
-        if [ "$status" -ne 0 ] && grep -q 'Finished build for target' print-build.log \
-                      && ls "$out"/*.pdf >/dev/null 2>&1; then
-          echo "pretext exited with status $status after writing the PDF ($(grep -c 'PTX:\(BUG\|ERROR\)' print-build.log || true) PTX:BUG/ERROR lines); keeping it."
-          status=0
-        fi
         if [ "$status" -ne 0 ]; then
           # When LaTeX fails pretext deletes its scratch folder, log included, and says
           # only that the compilation failed. So build the book's LaTeX target instead
