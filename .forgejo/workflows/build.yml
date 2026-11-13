@@ -360,9 +360,39 @@ jobs:
           print(f"Removed browser-only script, style and button elements from {n} STACK file(s)")
           PY
           mkdir -p "$GITHUB_WORKSPACE/dist"
+          # The print target runs XeLaTeX three times, each with PDF output, and for a long
+          # book nearly all of that time goes on embedding images: for a 630-page book about
+          # 11 minutes a pass with PDF output and under 2 with -no-pdf. So when the project has
+          # a print-latex target, build that and run the first two passes with -no-pdf (they
+          # still write the .aux files the next pass reads), and only the last as a full pass.
+          # Without one, build the print target as before.
+          fast=0
+          status=1
           set +e
-          pretext build print
-          status=$?
+          if grep -q 'name="print-latex"' project.ptx; then
+            fast=1
+            pretext build print-latex >latex-build.log 2>&1
+            lx=$(python -c 'import sys, xml.etree.ElementTree as ET
+          for t in ET.parse("project.ptx").getroot().iter("target"):
+              if t.get("name") == sys.argv[1]:
+                  o = t.find("output-dir")
+                  print((o.text if o is not None and o.text else "output/" + sys.argv[1]).strip())
+                  break' print-latex)
+            if [ -f "$lx/main.tex" ]; then
+              (cd "$lx" &&
+                xelatex -no-pdf -interaction=nonstopmode -halt-on-error main.tex >xelatex.out 2>&1 &&
+                xelatex -no-pdf -interaction=nonstopmode -halt-on-error main.tex >>xelatex.out 2>&1 &&
+                xelatex -interaction=nonstopmode -halt-on-error main.tex >>xelatex.out 2>&1)
+              if [ -f "$lx/main.pdf" ]; then
+                mkdir -p output/print
+                cp "$lx/main.pdf" output/print/main.pdf
+                status=0
+              fi
+            fi
+          else
+            pretext build print
+            status=$?
+          fi
           set -e
           if [ "$status" -ne 0 ]; then
             # When LaTeX fails pretext deletes its scratch folder, log included, and says
@@ -373,7 +403,7 @@ jobs:
             if grep -q 'name="print-latex"' project.ptx; then
               # Its exit status is not what matters (a preview screenshot can time out
               # and still leave main.tex); whether main.tex was written is.
-              pretext build print-latex >latex-build.log 2>&1 || true
+              if [ "$fast" != 1 ]; then pretext build print-latex >latex-build.log 2>&1 || true; fi
               lx=$(python -c 'import sys, xml.etree.ElementTree as ET
           for t in ET.parse("project.ptx").getroot().iter("target"):
               if t.get("name") == sys.argv[1]:
@@ -381,7 +411,7 @@ jobs:
                   print((o.text if o is not None and o.text else "output/" + sys.argv[1]).strip())
                   break' print-latex)
               if [ -f "$lx/main.tex" ]; then
-                (cd "$lx" && xelatex -interaction=nonstopmode -halt-on-error main.tex >xelatex.out 2>&1) || true
+                if [ "$fast" != 1 ]; then (cd "$lx" && xelatex -interaction=nonstopmode -halt-on-error main.tex >xelatex.out 2>&1) || true; fi
                 echo "=== LaTeX errors from $lx/main.log ==="
                 grep -n -A6 '^!' "$lx/main.log" | head -150 || true
                 echo "=== end of the LaTeX run ==="
