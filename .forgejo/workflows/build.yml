@@ -47,6 +47,13 @@ on:
           without failing the run. Skipped for a book with no `print` target.
         type: boolean
         default: true
+      release-pdf:
+        description: >-
+          On main, attach the PDF to a release tagged `latest`, so the book has a
+          download link that does not expire (an artifact is kept for 14 days).
+          Needs the `pdf` input and a book with a `print` target.
+        type: boolean
+        default: true
       svc-ref:
         description: The branch, tag or commit of svc to build with.
         type: string
@@ -420,3 +427,47 @@ jobs:
           path: dist/book.pdf
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: Release the PDF
+        # A rolling release, `latest`, so the link never changes:
+        #   <forge>/<repo>/releases/download/latest/book.pdf
+        # Only main, and only if a PDF was built. It can fail without failing the
+        # run: the site is already published. The release is updated in place, so
+        # one repository has one release, not one per build.
+        if: inputs.pdf && inputs.release-pdf && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        shell: bash
+        env:
+          FORGE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+        run: |
+          if [ ! -f dist/book.pdf ]; then
+            echo "No PDF was built, so nothing to release."
+            exit 0
+          fi
+          auth="Authorization: token $FORGE_TOKEN"
+          sha=$(git -C book rev-parse --short HEAD)
+          body="Built from ${sha} on $(date -u +%Y-%m-%d). Replaced by each build of main."
+          json() { python -c 'import json,sys; print(json.load(sys.stdin)'"$1"')'; }
+
+          code=$(curl -sS -o rel.json -w '%{http_code}' -H "$auth" "$API/releases/tags/latest")
+          if [ "$code" = 404 ]; then
+            curl --fail-with-body -sS -X POST -H "$auth" -H "Content-Type: application/json"               -d "{\"tag_name\":\"latest\",\"target_commitish\":\"$GITHUB_SHA\",\"name\":\"Latest PDF\",\"body\":\"$body\"}"               "$API/releases" -o rel.json
+          elif [ "$code" = 200 ]; then
+            id=$(json '["id"]' <rel.json)
+            curl --fail-with-body -sS -X PATCH -H "$auth" -H "Content-Type: application/json"               -d "{\"body\":\"$body\"}" "$API/releases/$id" -o /dev/null
+          else
+            echo "Could not look up the release (HTTP $code):"; cat rel.json; exit 1
+          fi
+          id=$(json '["id"]' <rel.json)
+
+          # An existing asset of the same name is replaced, not duplicated.
+          curl --fail-with-body -sS -H "$auth" "$API/releases/$id/assets" |
+            python -c 'import json,sys
+          for a in json.load(sys.stdin):
+              if a["name"] == "book.pdf": print(a["id"])' |
+            while read -r old; do
+              curl --fail-with-body -sS -X DELETE -H "$auth" "$API/releases/$id/assets/$old"
+            done
+          curl --fail-with-body -sS -X POST -H "$auth" -F "attachment=@dist/book.pdf"             "$API/releases/$id/assets?name=book.pdf" -o /dev/null
+          echo "Released $GITHUB_SERVER_URL/${GITHUB_REPOSITORY}/releases/download/latest/book.pdf"
