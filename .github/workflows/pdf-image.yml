@@ -1,0 +1,54 @@
+# Builds images/pdf/Dockerfile and pushes it to ghcr.io as
+# ghcr.io/idemsinternational/svc-pdf, tagged `latest` and with the commit.
+# The Forgejo builds pull it from there (build.yml's `pdf-image` input).
+#
+# This runs on GitHub, not Forgejo: GitHub's runners can build an image and
+# Forgejo's give a job no Docker daemon to build with.
+#
+# Only when the image's files change, or by hand. A pull request builds it
+# without pushing, so a broken Dockerfile shows before it merges.
+name: pdf image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - images/pdf/**
+      - .github/workflows/pdf-image.yml
+  pull_request:
+    paths:
+      - images/pdf/**
+      - .github/workflows/pdf-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make room
+        # TeX Live and the base image together need more disk than a runner
+        # has free; the runner's preinstalled toolchains are not used here.
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: images/pdf
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ghcr.io/idemsinternational/svc-pdf:latest
+            ghcr.io/idemsinternational/svc-pdf:${{ github.sha }}

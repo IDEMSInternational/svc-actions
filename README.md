@@ -11,7 +11,8 @@ workflow files only call these:
 | [`translation-site.yml`](.forgejo/workflows/translation-site.yml) | a translation repository's workflow, after its translate job | builds each translated book with the tool, comments and edits going to the translation repository or the source book; packages; publishes from `main` |
 | [`site-translation-edit.yml`](.forgejo/workflows/site-translation-edit.yml) | a translation repository's `site-translation-edit.yml`, on `issues: opened` | turns a `[translation-edit]` issue's edits into dictionary entries or postprocess rules on a branch, and opens a pull request |
 
-This repository holds workflow YAML only. The code it runs lives in
+This repository holds workflow YAML, and the Dockerfile of the image the PDF
+builds run in (below). The code the workflows run lives in
 [svc](https://github.com/IDEMSInternational/svc): the svc-id HTML layer, its
 build wrapper, the site packager, the feedback tool and `site_feedback.py`.
 svc is private, so the workflows fetch it at build time with the organisation
@@ -41,9 +42,22 @@ write them into new books.
 | `feedback` | `false` | add the comment and edit tool to the site; keep `site-edit.yml` and `site-feedback.yml` in the book |
 | `max-ptx-errors` | (strict) | tolerate a non-zero exit from pretext if it wrote the site and logged at most this many `PTX:ERROR` lines |
 | `pdf` | `true` | also build the `print` target as a PDF, kept as the artifact `book-pdf`; runs after the site is published and cannot fail the run |
+| `pdf-image` | `ghcr.io/idemsinternational/svc-pdf:latest` | the image the job runs in when it builds the PDF; empty installs LaTeX in the runner's own image instead, 8-12 minutes a run |
+| `pdf-timeout-minutes` | `45` | stop the PDF build after this long, so a build that will not finish gives its runner back |
 | `svc-ref` | `main` | the svc branch, tag or commit to build with |
 
 `site-edit.yml` and `site-feedback.yml` take `svc-ref` too.
+
+## The PDF image
+
+[`images/pdf/Dockerfile`](images/pdf/Dockerfile) is the runner's own image
+(`catthehacker/ubuntu:act-latest`) with TeX Live, Chromium's system libraries
+and Java installed. [`pdf-image.yml`](.github/workflows/pdf-image.yml), on
+GitHub, builds it and pushes it to `ghcr.io/idemsinternational/svc-pdf` when the
+Dockerfile changes on `main`, or when run by hand; a pull request builds it
+without pushing. The ghcr.io package must be public, so the Forgejo runner can
+pull it without credentials. `build.yml` and `translation-pdf` skip their
+install step when they find `/etc/svc-pdf-image`, which only the image has.
 
 ## Translation repositories
 

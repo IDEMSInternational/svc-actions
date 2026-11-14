@@ -54,6 +54,19 @@ on:
           Needs the `pdf` input and a book with a `print` target.
         type: boolean
         default: true
+      pdf-image:
+        description: >-
+          The image the job runs in when the PDF is built: the runner's own image
+          with LaTeX already installed (images/pdf/Dockerfile). Empty runs in the
+          runner's own image and installs LaTeX each time, 8-12 minutes.
+        type: string
+        default: ghcr.io/idemsinternational/svc-pdf:latest
+      pdf-timeout-minutes:
+        description: >-
+          Stop the PDF build after this many minutes, so a build that will not
+          finish gives its runner back. The site is already published by then.
+        type: number
+        default: 45
       svc-ref:
         description: The branch, tag or commit of svc to build with.
         type: string
@@ -72,10 +85,13 @@ jobs:
     # The runner declares exactly one label, ubuntu-latest. A runs-on that
     # matches no label is not rejected -- the job queues forever.
     #
-    # No `container:` here. checkout and upload-artifact are JavaScript
-    # actions, so whatever they run in must have node; the runner's own image
-    # does, and a bare python image does not.
+    # checkout and upload-artifact are JavaScript actions, so whatever the job
+    # runs in must have node: the runner's own image does, and so does the PDF
+    # image, which is built on it. With no PDF, or `pdf-image` empty, the image
+    # is '' and the job runs in the runner's own image.
     runs-on: ubuntu-latest
+    container:
+      image: ${{ inputs.pdf && inputs.pdf-image || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -234,9 +250,17 @@ jobs:
         # tree still holds the web build's generated assets (the STACK .ptx
         # the print build reads), which is why the PDF is built here and not
         # in a job of its own.
+        #
+        # In the PDF image (`pdf-image`) all of it is installed already. The
+        # image is pulled when the job starts, so a missing image does hold up
+        # the site: set `pdf-image` empty to build without it.
         if: inputs.pdf
         continue-on-error: true
         run: |
+          if [ -f /etc/svc-pdf-image ]; then
+            echo "LaTeX comes with the image: $(cat /etc/svc-pdf-image)."
+            exit 0
+          fi
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends             texlive-xetex texlive-latex-extra texlive-fonts-recommended             texlive-fonts-extra texlive-science fonts-dejavu fonts-noto-core             latexmk fontconfig
           # The print build screenshots interactive figures with Chromium, which
@@ -247,6 +271,10 @@ jobs:
         if: inputs.pdf
         id: pdf
         continue-on-error: true
+        # Without this a build that will not finish holds its runner until the
+        # 60-minute job limit. A book that legitimately needs longer raises
+        # `pdf-timeout-minutes`.
+        timeout-minutes: ${{ inputs.pdf-timeout-minutes }}
         shell: bash
         run: |
           cd "$TREE"

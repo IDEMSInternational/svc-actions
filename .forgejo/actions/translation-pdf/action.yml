@@ -3,8 +3,20 @@
 # Called by the translation repository's workflow after translation-book, in the
 # same job: the translated project is already at translated/<name>.
 #
+# The job should run in the PDF image, which has LaTeX installed already
+# (images/pdf/Dockerfile); in the runner's own image the install below takes
+# 7-12 minutes a run:
+#
+#   book:
+#     runs-on: ubuntu-latest
+#     container:
+#       image: ghcr.io/idemsinternational/svc-pdf:latest
+#
+# and the step:
+#
 #   - uses: IDEMSInternational/svc-actions/.forgejo/actions/translation-pdf@main
 #     continue-on-error: true       # a PDF problem must never stop the site
+#     timeout-minutes: 45           # a build that will not finish gives its runner back
 #     with:
 #       name: ${{ matrix.name }}
 #   - uses: actions/upload-artifact@v3
@@ -39,7 +51,13 @@ runs:
   steps:
     - name: Install LaTeX, with French
       shell: bash
+      # Nothing to do in the PDF image, which has all of it (and the French).
+      # Without it this takes 7-12 minutes on every run.
       run: |
+        if [ -f /etc/svc-pdf-image ]; then
+          echo "LaTeX comes with the image: $(cat /etc/svc-pdf-image)."
+          exit 0
+        fi
         sudo apt-get update -qq
         sudo apt-get install -y -qq --no-install-recommends \
           texlive-xetex texlive-latex-extra texlive-fonts-recommended \
