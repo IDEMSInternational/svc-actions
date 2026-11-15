@@ -56,11 +56,12 @@ on:
         default: true
       pdf-image:
         description: >-
-          The image the job runs in when the PDF is built: the runner's own image
-          with LaTeX already installed (images/pdf/Dockerfile). Empty runs in the
-          runner's own image and installs LaTeX each time, 8-12 minutes.
+          The image the job runs in when the PDF is built: the PreTeXt project's
+          own, with LaTeX, Chromium and node already in it. Pinned to a release;
+          raise it on purpose. Empty runs in the runner's own image and installs
+          LaTeX each time, 8-12 minutes.
         type: string
-        default: ghcr.io/idemsinternational/svc-pdf:latest
+        default: pretextbook/pretext-full:1.17
       pdf-timeout-minutes:
         description: >-
           Stop the PDF build after this many minutes, so a build that will not
@@ -86,9 +87,9 @@ jobs:
     # matches no label is not rejected -- the job queues forever.
     #
     # checkout and upload-artifact are JavaScript actions, so whatever the job
-    # runs in must have node: the runner's own image does, and so does the PDF
-    # image, which is built on it. With no PDF, or `pdf-image` empty, the image
-    # is '' and the job runs in the runner's own image.
+    # runs in must have node: the runner's own image does, and so does
+    # pretext-full. With no PDF, or `pdf-image` empty, the image is '' and the
+    # job runs in the runner's own image.
     runs-on: ubuntu-latest
     container:
       image: ${{ inputs.pdf && inputs.pdf-image || '' }}
@@ -97,7 +98,10 @@ jobs:
         with:
           path: book
 
+      # pretext-full is Debian, which setup-python has no Python builds for, and
+      # it has a Python of its own (3.13, in /opt/venv, on PATH).
       - uses: actions/setup-python@v5
+        if: ${{ !(inputs.pdf && inputs.pdf-image != '') }}
         with:
           python-version: "3.12"
 
@@ -251,14 +255,15 @@ jobs:
         # the print build reads), which is why the PDF is built here and not
         # in a job of its own.
         #
-        # In the PDF image (`pdf-image`) all of it is installed already. The
-        # image is pulled when the job starts, so a missing image does hold up
-        # the site: set `pdf-image` empty to build without it.
+        # In pretext-full (`pdf-image`) all of it is installed already, as
+        # TinyTeX with the packages PreTeXt itself uses. The image is pulled when
+        # the job starts, so a missing image does hold up the site: set
+        # `pdf-image` empty to build without it.
         if: inputs.pdf
         continue-on-error: true
         run: |
-          if [ -f /etc/svc-pdf-image ]; then
-            echo "LaTeX comes with the image: $(cat /etc/svc-pdf-image)."
+          if command -v tlmgr >/dev/null && command -v xelatex >/dev/null; then
+            echo "LaTeX comes with the image: $(xelatex --version | head -1)."
             exit 0
           fi
           sudo apt-get update -qq

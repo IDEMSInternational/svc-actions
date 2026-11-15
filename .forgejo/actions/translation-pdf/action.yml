@@ -3,14 +3,15 @@
 # Called by the translation repository's workflow after translation-book, in the
 # same job: the translated project is already at translated/<name>.
 #
-# The job should run in the PDF image, which has LaTeX installed already
-# (images/pdf/Dockerfile); in the runner's own image the install below takes
-# 7-12 minutes a run:
+# The job should run in the PreTeXt project's image, which has LaTeX, Chromium
+# and node already; in the runner's own image the install below takes 7-12
+# minutes a run. It is Debian, with no sudo: skip actions/setup-python there
+# (it has Python 3.13 on PATH) and run apt-get without sudo.
 #
 #   book:
 #     runs-on: ubuntu-latest
 #     container:
-#       image: ghcr.io/idemsinternational/svc-pdf:latest
+#       image: pretextbook/pretext-full:1.17
 #
 # and the step:
 #
@@ -51,11 +52,12 @@ runs:
   steps:
     - name: Install LaTeX, with French
       shell: bash
-      # Nothing to do in the PDF image, which has all of it (and the French).
-      # Without it this takes 7-12 minutes on every run.
+      # In pretext-full, LaTeX is TinyTeX: only French hyphenation is missing,
+      # and tlmgr adds it in seconds. Without the image this takes 7-12 minutes.
       run: |
-        if [ -f /etc/svc-pdf-image ]; then
-          echo "LaTeX comes with the image: $(cat /etc/svc-pdf-image)."
+        if command -v tlmgr >/dev/null && command -v xelatex >/dev/null; then
+          echo "LaTeX comes with the image: $(xelatex --version | head -1)."
+          tlmgr install hyphen-french babel-french >/dev/null || echo "warning: could not add French hyphenation"
           exit 0
         fi
         sudo apt-get update -qq
