@@ -3,8 +3,21 @@
 # Called by the translation repository's workflow after translation-book, in the
 # same job: the translated project is already at translated/<name>.
 #
+# The job should run in the PreTeXt project's image, which has LaTeX, Chromium
+# and node already; in the runner's own image the install below takes 7-12
+# minutes a run. It is Debian, with no sudo: skip actions/setup-python there
+# (it has Python 3.13 on PATH) and run apt-get without sudo.
+#
+#   book:
+#     runs-on: ubuntu-latest
+#     container:
+#       image: pretextbook/pretext-full:1.17
+#
+# and the step:
+#
 #   - uses: IDEMSInternational/svc-actions/.forgejo/actions/translation-pdf@main
 #     continue-on-error: true       # a PDF problem must never stop the site
+#     timeout-minutes: 45           # a build that will not finish gives its runner back
 #     with:
 #       name: ${{ matrix.name }}
 #   - uses: actions/upload-artifact@v3
@@ -39,7 +52,14 @@ runs:
   steps:
     - name: Install LaTeX, with French
       shell: bash
+      # In pretext-full, LaTeX is TinyTeX: only French hyphenation is missing,
+      # and tlmgr adds it in seconds. Without the image this takes 7-12 minutes.
       run: |
+        if command -v tlmgr >/dev/null && command -v xelatex >/dev/null; then
+          echo "LaTeX comes with the image: $(xelatex --version | head -1)."
+          tlmgr install hyphen-french babel-french >/dev/null || echo "warning: could not add French hyphenation"
+          exit 0
+        fi
         sudo apt-get update -qq
         sudo apt-get install -y -qq --no-install-recommends \
           texlive-xetex texlive-latex-extra texlive-fonts-recommended \

@@ -54,6 +54,20 @@ on:
           Needs the `pdf` input and a book with a `print` target.
         type: boolean
         default: true
+      pdf-image:
+        description: >-
+          The image the job runs in when the PDF is built: the PreTeXt project's
+          own, with LaTeX, Chromium and node already in it. Pinned to a release;
+          raise it on purpose. Empty runs in the runner's own image and installs
+          LaTeX each time, 8-12 minutes.
+        type: string
+        default: pretextbook/pretext-full:1.17
+      pdf-timeout-minutes:
+        description: >-
+          Stop the PDF build after this many minutes, so a build that will not
+          finish gives its runner back. The site is already published by then.
+        type: number
+        default: 45
       svc-ref:
         description: The branch, tag or commit of svc to build with.
         type: string
@@ -72,16 +86,22 @@ jobs:
     # The runner declares exactly one label, ubuntu-latest. A runs-on that
     # matches no label is not rejected -- the job queues forever.
     #
-    # No `container:` here. checkout and upload-artifact are JavaScript
-    # actions, so whatever they run in must have node; the runner's own image
-    # does, and a bare python image does not.
+    # checkout and upload-artifact are JavaScript actions, so whatever the job
+    # runs in must have node: the runner's own image does, and so does
+    # pretext-full. With no PDF, or `pdf-image` empty, the image is '' and the
+    # job runs in the runner's own image.
     runs-on: ubuntu-latest
+    container:
+      image: ${{ inputs.pdf && inputs.pdf-image || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
           path: book
 
+      # pretext-full is Debian, which setup-python has no Python builds for, and
+      # it has a Python of its own (3.13, in /opt/venv, on PATH).
       - uses: actions/setup-python@v5
+        if: ${{ !(inputs.pdf && inputs.pdf-image != '') }}
         with:
           python-version: "3.12"
 
@@ -234,9 +254,18 @@ jobs:
         # tree still holds the web build's generated assets (the STACK .ptx
         # the print build reads), which is why the PDF is built here and not
         # in a job of its own.
+        #
+        # In pretext-full (`pdf-image`) all of it is installed already, as
+        # TinyTeX with the packages PreTeXt itself uses. The image is pulled when
+        # the job starts, so a missing image does hold up the site: set
+        # `pdf-image` empty to build without it.
         if: inputs.pdf
         continue-on-error: true
         run: |
+          if command -v tlmgr >/dev/null && command -v xelatex >/dev/null; then
+            echo "LaTeX comes with the image: $(xelatex --version | head -1)."
+            exit 0
+          fi
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends             texlive-xetex texlive-latex-extra texlive-fonts-recommended             texlive-fonts-extra texlive-science fonts-dejavu fonts-noto-core             latexmk fontconfig
           # The print build screenshots interactive figures with Chromium, which
@@ -247,6 +276,10 @@ jobs:
         if: inputs.pdf
         id: pdf
         continue-on-error: true
+        # Without this a build that will not finish holds its runner until the
+        # 60-minute job limit. A book that legitimately needs longer raises
+        # `pdf-timeout-minutes`.
+        timeout-minutes: ${{ inputs.pdf-timeout-minutes }}
         shell: bash
         run: |
           cd "$TREE"

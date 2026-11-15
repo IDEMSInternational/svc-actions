@@ -41,9 +41,22 @@ write them into new books.
 | `feedback` | `false` | add the comment and edit tool to the site; keep `site-edit.yml` and `site-feedback.yml` in the book |
 | `max-ptx-errors` | (strict) | tolerate a non-zero exit from pretext if it wrote the site and logged at most this many `PTX:ERROR` lines |
 | `pdf` | `true` | also build the `print` target as a PDF, kept as the artifact `book-pdf`; runs after the site is published and cannot fail the run |
+| `pdf-image` | `pretextbook/pretext-full:1.17` | the image the job runs in when it builds the PDF; empty installs LaTeX in the runner's own image instead, 8-12 minutes a run |
+| `pdf-timeout-minutes` | `45` | stop the PDF build after this long, so a build that will not finish gives its runner back |
 | `svc-ref` | `main` | the svc branch, tag or commit to build with |
 
 `site-edit.yml` and `site-feedback.yml` take `svc-ref` too.
+
+## The PDF image
+
+The PDF is built in the PreTeXt project's own image,
+[`pretextbook/pretext-full`](https://hub.docker.com/r/pretextbook/pretext-full),
+which has LaTeX (TinyTeX, with the packages PreTeXt uses), Chromium and node,
+so a build does not install them every run. It is pinned to a release in
+`build.yml`'s `pdf-image` and in the example in `translation-pdf`; raise both
+together. A book that needs a TeX package the image lacks adds it with
+`tlmgr install`. The image is Debian, not the runner's Ubuntu, and has no
+`sudo`, so steps that run in it use neither `actions/setup-python` nor `sudo`.
 
 ## Translation repositories
 
