@@ -135,7 +135,7 @@ jobs:
           role=$(python -c 'import json; print(json.load(open("book/.svc/config.json"))["role"])')
           echo "This book is a $role."
           echo "ROLE=$role" >>"$GITHUB_ENV"
-          pip install --no-cache-dir "pretext==2.52.3"
+          pip install --no-cache-dir "pretext==2.56.2"
           # A base without the feedback tool needs only PreTeXt; the resolver
           # and site_feedback.py need the svc library.
           if [ "$role" = variant ] || [ "${{ inputs.feedback }}" = true ]; then

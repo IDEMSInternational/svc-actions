@@ -59,7 +59,7 @@ runs:
         if [ "$before" != "$(git -C svc rev-parse HEAD)" ]; then
           pip install --no-cache-dir ./svc
         fi
-        pip install -q "pretext==2.52.3"
+        pip install -q "pretext==2.56.2"
         python - <<'PY'
         import json, os
         c = json.load(open(os.environ["CONFIG"], encoding="utf-8"))
@@ -91,7 +91,7 @@ runs:
         key=$(python svc/scripts/translation_site.py key --project "$project" \
           --content "content/$name/tree" --extra "svc=$svc_fp" --extra "target=$TARGET" \
           --extra "feedback=$FEEDBACK" --extra "lang=$source_lang-$lang" --extra "repo=$repo" \
-          --extra "pretext=2.52.3")
+          --extra "pretext=2.56.2")
         if python svc/scripts/translation_site.py cache-restore --repo "$GITHUB_REPOSITORY" --name "$name" \
              --lang "$lang" --key "$key" --out "dist/$name-$lang.tar.gz"; then
           echo "=== $name: unchanged, reusing the published build ==="
