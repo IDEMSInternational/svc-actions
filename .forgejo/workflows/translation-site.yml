@@ -110,7 +110,7 @@ jobs:
           git -C svc fetch -q --depth 1 https://git.idems.international/IDEMSInternational/svc.git "$SVC_REF"
           git -C svc checkout -q FETCH_HEAD
           echo "svc at $(git -C svc rev-parse --short HEAD) ($SVC_REF)"
-          pip install --no-cache-dir "pretext==2.52.3" ./svc
+          pip install --no-cache-dir "pretext==2.56.2" ./svc
           python svc/scripts/translation_sources.py --config translate/translate.config.json --into content
 
       - name: Build each translated source through the svc-id layer
@@ -144,7 +144,7 @@ jobs:
             key=$(python svc/scripts/translation_site.py key --project "$project" \
               --content "content/$name/tree" --extra "svc=$svc_sha" --extra "target=$TARGET" \
               --extra "feedback=$FEEDBACK" --extra "lang=$source_lang-$lang" --extra "repo=$repo" \
-              --extra "pretext=2.52.3")
+              --extra "pretext=2.56.2")
             if python svc/scripts/translation_site.py restore --site "$site" --name "$name" \
                  --lang "$lang" --key "$key" --out "dist/$name-$lang.tar.gz"; then
               echo "=== $name: unchanged, reusing the published build ==="
