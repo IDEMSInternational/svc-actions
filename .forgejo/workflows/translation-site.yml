@@ -209,7 +209,7 @@ jobs:
         with:
           name: translated-sites
           path: dist
-          retention-days: 14
+          retention-days: 4
 
       - name: Publish the sites
         # Only main, or a run the caller says to publish, is published; other

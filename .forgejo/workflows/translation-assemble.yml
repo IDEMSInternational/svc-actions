@@ -102,7 +102,7 @@ jobs:
         with:
           name: translated-sites
           path: dist
-          retention-days: 14
+          retention-days: 4
 
       - name: Publish the sites
         if: github.ref == 'refs/heads/main' || inputs.publish
