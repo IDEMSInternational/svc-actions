@@ -229,7 +229,7 @@ jobs:
         with:
           name: site-archive
           path: dist/site.tar.gz
-          retention-days: 14
+          retention-days: 4
 
       - name: Publish the site
         # Only main is published; other branches are reviewed from the archive.
@@ -448,7 +448,7 @@ jobs:
           name: book-pdf-logs
           path: dist/pdf-logs
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 4
 
       - name: Keep the PDF
         if: inputs.pdf
@@ -459,7 +459,7 @@ jobs:
           name: book-pdf
           path: dist/book.pdf
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 4
 
       - name: Release the PDF
         # A rolling release, `latest`, so the link never changes:
